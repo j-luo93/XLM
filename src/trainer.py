@@ -5,24 +5,26 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-import os
 import math
+import os
 import time
-from logging import getLogger
 from collections import OrderedDict
+from logging import getLogger
+
 import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
-import apex
 
-from .optim import get_optimizer
-from .utils import to_cuda, concat_batches, find_modules
-from .utils import parse_lambda_config, update_lambdas
+import apex
+from trainlib import log_this
+
 from .model.memory import HashingMemory
 from .model.transformer import TransformerFFN
-
+from .optim import get_optimizer
+from .utils import (concat_batches, find_modules, parse_lambda_config, to_cuda,
+                    update_lambdas)
 
 logger = getLogger()
 
@@ -60,7 +62,8 @@ class Trainer(object):
         if params.multi_gpu and params.amp == -1:
             logger.info("Using nn.parallel.DistributedDataParallel ...")
             for name in self.MODEL_NAMES:
-                setattr(self, name, nn.parallel.DistributedDataParallel(getattr(self, name), device_ids=[params.local_rank], output_device=params.local_rank, broadcast_buffers=True))
+                setattr(self, name, nn.parallel.DistributedDataParallel(getattr(self, name), device_ids=[
+                        params.local_rank], output_device=params.local_rank, broadcast_buffers=True))
 
         # set optimizers
         self.set_optimizers()
@@ -71,7 +74,8 @@ class Trainer(object):
             if params.multi_gpu:
                 logger.info("Using apex.parallel.DistributedDataParallel ...")
                 for name in self.MODEL_NAMES:
-                    setattr(self, name, apex.parallel.DistributedDataParallel(getattr(self, name), delay_allreduce=True))
+                    setattr(self, name, apex.parallel.DistributedDataParallel(
+                        getattr(self, name), delay_allreduce=True))
 
         # stopping criterion used for early stopping
         if params.stopping_criterion != '':
@@ -286,7 +290,8 @@ class Trainer(object):
         """
         Create a new iterator for a dataset.
         """
-        logger.info("Creating new training data iterator (%s) ..." % ','.join([str(x) for x in [iter_name, lang1, lang2] if x is not None]))
+        logger.info("Creating new training data iterator (%s) ..." %
+                    ','.join([str(x) for x in [iter_name, lang1, lang2] if x is not None]))
         assert stream or not self.params.use_memory or not self.params.mem_query_batchnorm
         if lang2 is None:
             if stream:
@@ -483,10 +488,12 @@ class Trainer(object):
             (x1, len1) = self.get_batch(name, lang1)
             (x2, len2) = (x1, len1)
             (x1, len1) = self.add_noise(x1, len1)
-            x, lengths, positions, langs = concat_batches(x1, len1, lang1_id, x2, len2, lang2_id, params.pad_index, params.eos_index, reset_positions=False)
+            x, lengths, positions, langs = concat_batches(
+                x1, len1, lang1_id, x2, len2, lang2_id, params.pad_index, params.eos_index, reset_positions=False)
         else:
             (x1, len1), (x2, len2) = self.get_batch(name, lang1, lang2)
-            x, lengths, positions, langs = concat_batches(x1, len1, lang1_id, x2, len2, lang2_id, params.pad_index, params.eos_index, reset_positions=True)
+            x, lengths, positions, langs = concat_batches(
+                x1, len1, lang1_id, x2, len2, lang2_id, params.pad_index, params.eos_index, reset_positions=True)
 
         return x, lengths, positions, langs, (None, None) if lang2 is None else (len1, len2)
 
@@ -654,6 +661,7 @@ class Trainer(object):
         assert x.size(1) % 8 == 0
         return x, lengths, positions, langs, idx
 
+    @log_this(arg_list=['lang1', 'lang2'])
     def clm_step(self, lang1, lang2, lambda_coeff):
         """
         Next word prediction step (causal prediction).
@@ -694,6 +702,7 @@ class Trainer(object):
         self.stats['processed_s'] += lengths.size(0)
         self.stats['processed_w'] += pred_mask.sum().item()
 
+    @log_this(arg_list=['lang1', 'lang2'])
     def mlm_step(self, lang1, lang2, lambda_coeff):
         """
         Masked word prediction step.
@@ -729,6 +738,7 @@ class Trainer(object):
         self.stats['processed_s'] += lengths.size(0)
         self.stats['processed_w'] += pred_mask.sum().item()
 
+    @log_this(arg_list=['lang1', 'lang2'])
     def pc_step(self, lang1, lang2, lambda_coeff):
         """
         Parallel classification step. Predict if pairs of sentences are mutual translations of each other.
@@ -759,7 +769,8 @@ class Trainer(object):
         x2, len2 = x2[:, idx], len2[idx]
 
         # generate batch / cuda
-        x, lengths, positions, langs = concat_batches(x1, len1, lang1_id, x2, len2, lang2_id, params.pad_index, params.eos_index, reset_positions=False)
+        x, lengths, positions, langs = concat_batches(
+            x1, len1, lang1_id, x2, len2, lang2_id, params.pad_index, params.eos_index, reset_positions=False)
         x, lengths, positions, langs, new_idx = self.round_batch(x, lengths, positions, langs)
         if new_idx is not None:
             y = y[new_idx]
@@ -813,7 +824,21 @@ class EncDecTrainer(Trainer):
 
         super().__init__(data, params)
 
+    @log_this(arg_list=['lang1', 'lang2'])
+    def denoise_mt_step(self, lang1, lang2, lambda_coeff):
+        if lang1 != lang2:
+            raise ValueError(
+                'denoise_mt_step should be called for the same language, but got "{lang1}" and "{lang2}". Did you mean to use mt_step?')
+        return self._mt_step(lang1, lang2, lambda_coeff)
+
+    @log_this(arg_list=['lang1', 'lang2'])
     def mt_step(self, lang1, lang2, lambda_coeff):
+        if lang1 == lang2:
+            raise ValueError(
+                'mt_step should be called for different languages, but got "{lang1}" and "{lang2}". Did you mean to use denoise_mt_step?')
+        return self._mt_step(lang1, lang2, lambda_coeff)
+
+    def _mt_step(self, lang1, lang2, lambda_coeff):
         """
         Machine translation step.
         Can also be used for denoising auto-encoding.
@@ -867,6 +892,7 @@ class EncDecTrainer(Trainer):
         self.stats['processed_s'] += len2.size(0)
         self.stats['processed_w'] += (len2 - 1).sum().item()
 
+    @log_this(arg_list=['lang1', 'lang2', 'lang3'])
     def bt_step(self, lang1, lang2, lang3, lambda_coeff):
         """
         Back-translation step for machine translation.

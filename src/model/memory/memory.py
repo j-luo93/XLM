@@ -1,16 +1,18 @@
-from logging import getLogger
-import math
 import itertools
+import math
+from logging import getLogger
+
 import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-from ...utils import bool_flag
-from .utils import get_knn_faiss, cartesian_product
-from .utils import get_gaussian_keys, get_uniform_keys
-from .query import QueryIdentity, QueryMLP, QueryConv
+from arglib import add_argument
 
+from ...utils import bool_flag
+from .query import QueryConv, QueryIdentity, QueryMLP
+from .utils import (cartesian_product, get_gaussian_keys, get_knn_faiss,
+                    get_uniform_keys)
 
 logger = getLogger()
 
@@ -21,6 +23,99 @@ class HashingMemory(nn.Module):
     VALUES = None
     EVAL_MEMORY = True
     _ids = itertools.count(0)
+
+    # ------------------------ Register memory parameters ------------------------ #
+
+    add_argument("use_memory", dtype=bool, default=False, msg="Use an external memory")
+    add_argument("mem_enc_positions", dtype=str, default="",
+                 msg="Memory positions in the encoder ('4' for inside layer 4, '7,10+' for inside layer 7 and after layer 10)")
+    add_argument("mem_dec_positions", dtype=str, default="",
+                 msg="Memory positions in the decoder. Same syntax as `mem_enc_positions`.")
+    # memory implementation
+    add_argument("mem_implementation", dtype=str, default="pq_fast",
+                 msg="Memory implementation (flat, pq_default, pq_fast)")
+
+    # optimization
+    add_argument("mem_grouped_conv", dtype=bool, default=False,
+                 msg="Use grouped convolutions in the query network")
+    add_argument("mem_values_optimizer", dtype=str, default="adam,lr=0.001",
+                 msg="Memory values optimizer ("" for the same optimizer as the rest of the model)")
+    add_argument("mem_sparse", dtype=bool, default=False,
+                 msg="Perform sparse updates for the values")
+
+    # global parameters
+    add_argument("mem_input2d", dtype=bool, default=False,
+                 msg="Convolutional query network")
+    add_argument("mem_k_dim", dtype=int, default=256,
+                 msg="Memory keys dimension")
+    add_argument("mem_v_dim", dtype=int, default=-1,
+                 msg="Memory values dimension (-1 for automatic output dimension)")
+    add_argument("mem_heads", dtype=int, default=4,
+                 msg="Number of memory reading heads")
+    add_argument("mem_knn", dtype=int, default=32,
+                 msg="Number of memory slots to read / update - k-NN to the query")
+    add_argument("mem_share_values", dtype=bool, default=False,
+                 msg="Share values across memories")
+    add_argument("mem_shuffle_indices", dtype=bool, default=False,
+                 msg="Shuffle indices for different heads")
+    add_argument("mem_shuffle_query", dtype=bool, default=False,
+                 msg="Shuffle query dimensions (when the query network is the identity and there are multiple heads)")
+    add_argument("mem_modulo_size", dtype=int, default=-1,
+                 msg="Effective memory size: indices are taken modulo this parameter. -1 to disable.")
+
+    # keys
+    add_argument("mem_keys_dtype", dtype=str, default="uniform",
+                 msg="Memory keys dtype (binary,gaussian,uniform)")
+    add_argument("mem_n_keys", dtype=int, default=512,
+                 msg="Number of keys")
+    add_argument("mem_keys_normalized_init", dtype=bool, default=False,
+                 msg="Normalize keys at initialization")
+    add_argument("mem_keys_learn", dtype=bool, default=True,
+                 msg="Learn keys")
+    add_argument("mem_use_different_keys", dtype=bool, default=True,
+                 msg="Use different keys for each head / product quantization")
+
+    # queries
+    add_argument("mem_query_detach_input", dtype=bool, default=False,
+                 msg="Detach input")
+    add_argument("mem_query_layer_sizes", dtype=str, default="0,0",
+                 msg="Query MLP layer sizes ('', '0,0', '0,512,0')")
+    add_argument("mem_query_kernel_sizes", dtype=str, default="",
+                 msg="Query MLP kernel sizes (2D inputs only)")
+    add_argument("mem_query_bias", dtype=bool, default=True,
+                 msg="Query MLP bias")
+    add_argument("mem_query_batchnorm", dtype=bool, default=False,
+                 msg="Query MLP batch norm")
+    add_argument("mem_query_net_learn", dtype=bool, default=True,
+                 msg="Query MLP learn")
+    add_argument("mem_query_residual", dtype=bool, default=False,
+                 msg="Use a bottleneck with a residual layer in the query MLP")
+    add_argument("mem_multi_query_net", dtype=bool, default=False,
+                 msg="Use multiple query MLP (one for each head)")
+
+    # values initialization
+    add_argument("mem_value_zero_init", dtype=bool, default=False,
+                 msg="Initialize values with zeros")
+
+    # scoring
+    add_argument("mem_normalize_query", dtype=bool, default=False,
+                 msg="Normalize queries")
+    add_argument("mem_temperature", dtype=float, default=1,
+                 msg="Divide scores by a temperature")
+    add_argument("mem_score_softmax", dtype=bool, default=True,
+                 msg="Apply softmax on scores")
+    add_argument("mem_score_subtract", dtype=str, default="",
+                 msg="Subtract scores ('', min, mean, median)")
+    add_argument("mem_score_normalize", dtype=bool, default=False,
+                 msg="L1 normalization of the scores")
+
+    # dropout
+    add_argument("mem_input_dropout", dtype=float, default=0,
+                 msg="Input dropout")
+    add_argument("mem_query_dropout", dtype=float, default=0,
+                 msg="Query dropout")
+    add_argument("mem_value_dropout", dtype=float, default=0,
+                 msg="Value dropout")
 
     def __init__(self, input_dim, output_dim, params):
 
@@ -226,97 +321,6 @@ class HashingMemory(nn.Module):
         raise Exception("Not implemented!")
 
     @staticmethod
-    def register_args(parser):
-        """
-        Register memory parameters
-        """
-        # memory implementation
-        parser.add_argument("--mem_implementation", type=str, default="pq_fast",
-                            help="Memory implementation (flat, pq_default, pq_fast)")
-
-        # optimization
-        parser.add_argument("--mem_grouped_conv", type=bool_flag, default=False,
-                            help="Use grouped convolutions in the query network")
-        parser.add_argument("--mem_values_optimizer", type=str, default="adam,lr=0.001",
-                            help="Memory values optimizer ("" for the same optimizer as the rest of the model)")
-        parser.add_argument("--mem_sparse", type=bool_flag, default=False,
-                            help="Perform sparse updates for the values")
-
-        # global parameters
-        parser.add_argument("--mem_input2d", type=bool_flag, default=False,
-                            help="Convolutional query network")
-        parser.add_argument("--mem_k_dim", type=int, default=256,
-                            help="Memory keys dimension")
-        parser.add_argument("--mem_v_dim", type=int, default=-1,
-                            help="Memory values dimension (-1 for automatic output dimension)")
-        parser.add_argument("--mem_heads", type=int, default=4,
-                            help="Number of memory reading heads")
-        parser.add_argument("--mem_knn", type=int, default=32,
-                            help="Number of memory slots to read / update - k-NN to the query")
-        parser.add_argument("--mem_share_values", type=bool_flag, default=False,
-                            help="Share values across memories")
-        parser.add_argument("--mem_shuffle_indices", type=bool_flag, default=False,
-                            help="Shuffle indices for different heads")
-        parser.add_argument("--mem_shuffle_query", type=bool_flag, default=False,
-                            help="Shuffle query dimensions (when the query network is the identity and there are multiple heads)")
-        parser.add_argument("--mem_modulo_size", type=int, default=-1,
-                            help="Effective memory size: indices are taken modulo this parameter. -1 to disable.")
-
-        # keys
-        parser.add_argument("--mem_keys_type", type=str, default="uniform",
-                            help="Memory keys type (binary,gaussian,uniform)")
-        parser.add_argument("--mem_n_keys", type=int, default=512,
-                            help="Number of keys")
-        parser.add_argument("--mem_keys_normalized_init", type=bool_flag, default=False,
-                            help="Normalize keys at initialization")
-        parser.add_argument("--mem_keys_learn", type=bool_flag, default=True,
-                            help="Learn keys")
-        parser.add_argument("--mem_use_different_keys", type=bool_flag, default=True,
-                            help="Use different keys for each head / product quantization")
-
-        # queries
-        parser.add_argument("--mem_query_detach_input", type=bool_flag, default=False,
-                            help="Detach input")
-        parser.add_argument("--mem_query_layer_sizes", type=str, default="0,0",
-                            help="Query MLP layer sizes ('', '0,0', '0,512,0')")
-        parser.add_argument("--mem_query_kernel_sizes", type=str, default="",
-                            help="Query MLP kernel sizes (2D inputs only)")
-        parser.add_argument("--mem_query_bias", type=bool_flag, default=True,
-                            help="Query MLP bias")
-        parser.add_argument("--mem_query_batchnorm", type=bool_flag, default=False,
-                            help="Query MLP batch norm")
-        parser.add_argument("--mem_query_net_learn", type=bool_flag, default=True,
-                            help="Query MLP learn")
-        parser.add_argument("--mem_query_residual", type=bool_flag, default=False,
-                            help="Use a bottleneck with a residual layer in the query MLP")
-        parser.add_argument("--mem_multi_query_net", type=bool_flag, default=False,
-                            help="Use multiple query MLP (one for each head)")
-
-        # values initialization
-        parser.add_argument("--mem_value_zero_init", type=bool_flag, default=False,
-                            help="Initialize values with zeros")
-
-        # scoring
-        parser.add_argument("--mem_normalize_query", type=bool_flag, default=False,
-                            help="Normalize queries")
-        parser.add_argument("--mem_temperature", type=float, default=1,
-                            help="Divide scores by a temperature")
-        parser.add_argument("--mem_score_softmax", type=bool_flag, default=True,
-                            help="Apply softmax on scores")
-        parser.add_argument("--mem_score_subtract", type=str, default="",
-                            help="Subtract scores ('', min, mean, median)")
-        parser.add_argument("--mem_score_normalize", type=bool_flag, default=False,
-                            help="L1 normalization of the scores")
-
-        # dropout
-        parser.add_argument("--mem_input_dropout", type=float, default=0,
-                            help="Input dropout")
-        parser.add_argument("--mem_query_dropout", type=float, default=0,
-                            help="Query dropout")
-        parser.add_argument("--mem_value_dropout", type=float, default=0,
-                            help="Value dropout")
-
-    @staticmethod
     def build(input_dim, output_dim, params):
         if params.mem_implementation == 'flat':
             M = HashingMemoryFlat
@@ -340,7 +344,8 @@ class HashingMemory(nn.Module):
         # optimization
         assert params.mem_grouped_conv is False or params.mem_multi_query_net
         params.mem_values_optimizer = params.optimizer if params.mem_values_optimizer == '' else params.mem_values_optimizer
-        params.mem_values_optimizer = params.mem_values_optimizer.replace('adam', 'sparseadam') if params.mem_sparse else params.mem_values_optimizer
+        params.mem_values_optimizer = params.mem_values_optimizer.replace(
+            'adam', 'sparseadam') if params.mem_sparse else params.mem_values_optimizer
 
         # even number of key dimensions for product quantization
         assert params.mem_k_dim >= 2
@@ -593,8 +598,10 @@ class HashingMemoryProduct(HashingMemory):
             scores2, indices2 = get_knn_faiss(keys2.float(), q2.float(), knn, distance='dot_product')  # (bs, knn) ** 2
 
             # cartesian product on best candidate keys
-            concat_scores = cartesian_product(scores1, scores2)                                         # (bs, knn ** 2, 2)
-            concat_indices = cartesian_product(indices1, indices2)                                      # (bs, knn ** 2, 2)
+            # (bs, knn ** 2, 2)
+            concat_scores = cartesian_product(scores1, scores2)
+            # (bs, knn ** 2, 2)
+            concat_indices = cartesian_product(indices1, indices2)
 
             all_scores = concat_scores.sum(2)                                                           # (bs, knn ** 2)
             all_indices = concat_indices[:, :, 0] * n_keys + concat_indices[:, :, 1]                    # (bs, knn ** 2)
@@ -648,19 +655,27 @@ class HashingMemoryProductFast(HashingMemoryProduct):
         n_keys = len(keys1)
 
         # split query for product quantization
-        q1 = query[:, :half]                                                                                          # (bs, half)
-        q2 = query[:, half:]                                                                                          # (bs, half)
+        # (bs, half)
+        q1 = query[:, :half]
+        # (bs, half)
+        q2 = query[:, half:]
 
         # optionally normalize queries
         if self.normalize_query:
-            q1 = q1 / q1.norm(2, 1, keepdim=True).expand_as(q1)                                                       # (bs, half)
-            q2 = q2 / q2.norm(2, 1, keepdim=True).expand_as(q2)                                                       # (bs, half)
+            # (bs, half)
+            q1 = q1 / q1.norm(2, 1, keepdim=True).expand_as(q1)
+            # (bs, half)
+            q2 = q2 / q2.norm(2, 1, keepdim=True).expand_as(q2)
 
         # compute indices with associated scores
-        scores1 = F.linear(q1, keys1, bias=None)                                                                      # (bs, n_keys ** 0.5)
-        scores2 = F.linear(q2, keys2, bias=None)                                                                      # (bs, n_keys ** 0.5)
-        scores1, indices1 = scores1.topk(knn, dim=1, largest=True, sorted=True)                                       # (bs, knn) ** 2
-        scores2, indices2 = scores2.topk(knn, dim=1, largest=True, sorted=True)                                       # (bs, knn) ** 2
+        # (bs, n_keys ** 0.5)
+        scores1 = F.linear(q1, keys1, bias=None)
+        # (bs, n_keys ** 0.5)
+        scores2 = F.linear(q2, keys2, bias=None)
+        # (bs, knn) ** 2
+        scores1, indices1 = scores1.topk(knn, dim=1, largest=True, sorted=True)
+        # (bs, knn) ** 2
+        scores2, indices2 = scores2.topk(knn, dim=1, largest=True, sorted=True)
         # scores1, indices1 = get_knn_faiss(keys1, q1.contiguous(), knn, distance='dot_product')                        # (bs, knn) ** 2
         # scores2, indices2 = get_knn_faiss(keys2, q2.contiguous(), knn, distance='dot_product')                        # (bs, knn) ** 2
 
@@ -675,8 +690,10 @@ class HashingMemoryProductFast(HashingMemoryProduct):
         ).view(bs, -1)                                                                                                # (bs, knn ** 2)
 
         # select overall best scores and indices
-        scores, best_indices = torch.topk(all_scores, k=knn, dim=1, largest=True, sorted=True)                        # (bs, knn)
-        indices = all_indices.gather(1, best_indices)                                                                 # (bs, knn)
+        scores, best_indices = torch.topk(all_scores, k=knn, dim=1, largest=True,
+                                          sorted=True)                        # (bs, knn)
+        # (bs, knn)
+        indices = all_indices.gather(1, best_indices)
 
         # code below: debug instant retrieval speed
         # scores = torch.zeros(bs, knn, dtype=query.dtype, device=query.device)

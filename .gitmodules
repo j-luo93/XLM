@@ -1,0 +1,8 @@
+[submodule "arglib"]
+	path = arglib
+	url = git@github.com:j-luo93/arglib.git
+	branch = 0.1
+[submodule "trainlib"]
+	path = trainlib
+	url = git@github.com:j-luo93/trainlib.git
+	branch = master
