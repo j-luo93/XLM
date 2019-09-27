@@ -33,6 +33,8 @@ def add_main_arguments():
                  msg="Save the model periodically (0 to disable)")
     add_argument("exp_id", dtype=str, default="",
                  msg="Experiment ID")
+    add_argument("log_level", dtype=str, default="INFO",
+                 msg="log level")
 
     # float16 / AMP API
     add_argument("fp16", dtype=bool, default=False,

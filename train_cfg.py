@@ -39,15 +39,20 @@ class ParamsFromXLM:
         self.exp_name = f"unsupMT_{src}{tgt}"
 
 
+@dataclass
+class SingleGpuParams(ParamsFromXLM):
+    tokens_per_batch: int = 1000
+
+
 @reg
-class EnFrBase(ParamsFromXLM):
+class EnFrBase(SingleGpuParams):
     src_lang = 'en'
     tgt_lang = 'fr'
     reload_model = f'save/mlm_enfr_1024.pth,save/mlm_enfr_1024.pth'
 
 
 @reg
-class DeEnBase(ParamsFromXLM):
+class DeEnBase(SingleGpuParams):
     src_lang = 'de'
     tgt_lang = 'en'
     reload_model = f'save/mlm_ende_1024.pth,save/mlm_ende_1024.pth'

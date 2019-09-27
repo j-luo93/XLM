@@ -16,7 +16,7 @@ import subprocess
 import numpy as np
 import torch
 
-from .logger import create_logger
+from trainlib import create_logger
 
 
 FALSY_STRINGS = {'off', 'false', '0'}
@@ -73,7 +73,11 @@ def initialize_exp(params):
     assert len(params.exp_name.strip()) > 0
 
     # create a logger
-    logger = create_logger(os.path.join(params.dump_path, 'train.log'), rank=getattr(params, 'global_rank', 0))
+    rank = getattr(params, 'global_rank', 0)
+    file_path = os.path.join(params.dump_path, 'train.log')
+    if rank > 0:
+        file_path = f'{file_path}-{rank}'
+    logger = create_logger(file_path, log_level=params.log_level)
     logger.info("============ Initialized logger ============")
     logger.info("\n".join("%s: %s" % (k, str(v))
                           for k, v in sorted(dict(vars(params)).items())))
@@ -275,8 +279,10 @@ def shuf_order(langs, params=None, n=5):
         p_mono = p_mono / p_mono.sum()
         p_para = p_para / p_para.sum()
 
-    s_mono = [mono[i] for i in np.random.choice(len(mono), size=min(n, len(mono)), p=p_mono, replace=True)] if len(mono) > 0 else []
-    s_para = [para[i] for i in np.random.choice(len(para), size=min(n, len(para)), p=p_para, replace=True)] if len(para) > 0 else []
+    s_mono = [mono[i] for i in np.random.choice(len(mono), size=min(
+        n, len(mono)), p=p_mono, replace=True)] if len(mono) > 0 else []
+    s_para = [para[i] for i in np.random.choice(len(para), size=min(
+        n, len(para)), p=p_para, replace=True)] if len(para) > 0 else []
 
     assert len(s_mono) + len(s_para) > 0
     return [(lang, None) for lang in s_mono] + s_para
