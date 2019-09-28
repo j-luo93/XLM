@@ -151,6 +151,8 @@ def add_main_arguments():
                  msg="MT coefficient")
     add_argument("lambda_bt", dtype=str, default="1",
                  msg="BT coefficient")
+    add_argument("lambda_ep", dtype=str, default="1",
+                 msg="EP coefficient")
 
     # training steps
     add_argument("clm_steps", dtype=str, default="",
@@ -163,6 +165,8 @@ def add_main_arguments():
                  msg="Denoising auto-encoder steps")
     add_argument("bt_steps", dtype=str, default="",
                  msg="Back-translation steps")
+    add_argument("ep_steps", dtype=str, default="",
+                 msg="EAT-plain reconstruction steps")
     add_argument("pc_steps", dtype=str, default="",
                  msg="Parallel classification steps")
 
@@ -269,6 +273,10 @@ def main(params):
             # denoising auto-encoder steps
             for lang in shuf_order(params.ae_steps):
                 trainer.denoise_mt_step(lang, lang, params.lambda_ae)
+
+            # eat-plain steps, with optinal added noise
+            for lang in shuf_order(params.ep_steps):
+                trainer.ep_step(lang, params.lambda_ep)
 
             # machine translation steps
             for lang1, lang2 in shuf_order(params.mt_steps, params):

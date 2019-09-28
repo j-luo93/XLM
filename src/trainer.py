@@ -26,10 +26,14 @@ from .optim import get_optimizer
 from .utils import (concat_batches, find_modules, parse_lambda_config, to_cuda,
                     update_lambdas)
 
+from arglib import add_argument
+
 logger = getLogger()
 
 
 class Trainer(object):
+
+    add_argument('ep_add_noise', default=False, dtype=bool)
 
     def __init__(self, data, params):
         """
@@ -314,7 +318,7 @@ class Trainer(object):
         self.iterators[(iter_name, lang1, lang2)] = iterator
         return iterator
 
-    def get_batch(self, iter_name, lang1, lang2=None, stream=False):
+    def get_batch(self, iter_name, lang1, lang2=None, stream=False, input_format='plain'):
         """
         Return a batch of sentences from a dataset.
         """
@@ -329,7 +333,18 @@ class Trainer(object):
         except StopIteration:
             iterator = self.get_iterator(iter_name, lang1, lang2, stream)
             x = next(iterator)
-        return x if lang2 is None or lang1 < lang2 else x[::-1]
+        if lang2 is None or lang1 < lang2:
+            data, lengths = x
+            if input_format == 'eat':
+                assert len(data.shape) == 2
+                sl, bs = data.shape
+                assert sl % 9 == 0
+                unpacked = data[sl // 9, 9, bs]
+                data = unpacked[:, :3 ].view(-1, bs)
+                lengths = lengths // 3
+            return data, lengths
+        else:
+            return x[::-1] # NOTE Not sure this is reversed but I'm keeping it as it is.
 
     def word_shuffle(self, x, l):
         """
@@ -838,10 +853,15 @@ class EncDecTrainer(Trainer):
                 'mt_step should be called for different languages, but got "{lang1}" and "{lang2}". Did you mean to use denoise_mt_step?')
         return self._mt_step(lang1, lang2, lambda_coeff)
 
-    def _mt_step(self, lang1, lang2, lambda_coeff):
+    @log_this(arg_list=['lang'])
+    def ep_step(self, lang, lambda_coeff):
+        return self._mt_step(lang, lang, lambda_coeff, ep=True)
+
+    def _mt_step(self, lang1, lang2, lambda_coeff, ep=False):
         """
         Machine translation step.
         Can also be used for denoising auto-encoding.
+        `ep` stands for eat-plain.
         """
         assert lambda_coeff >= 0
         if lambda_coeff == 0:
@@ -855,9 +875,11 @@ class EncDecTrainer(Trainer):
 
         # generate batch
         if lang1 == lang2:
-            (x1, len1) = self.get_batch('ae', lang1)
+            input_format = 'eat' if ep else 'plain'
+            (x1, len1) = self.get_batch('ae', lang1, input_format=input_format)
             (x2, len2) = (x1, len1)
-            (x1, len1) = self.add_noise(x1, len1)
+            if not ep or params.ep_add_noise:
+                (x1, len1) = self.add_noise(x1, len1)
         else:
             (x1, len1), (x2, len2) = self.get_batch('mt', lang1, lang2)
         langs1 = x1.clone().fill_(lang1_id)
