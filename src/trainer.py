@@ -11,14 +11,15 @@ import time
 from collections import OrderedDict
 from logging import getLogger
 
+import apex
 import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
 
-import apex
-from trainlib import log_this
+from arglib import add_argument
+from trainlib import Tracker, log_this
 
 from .model.memory import HashingMemory
 from .model.transformer import TransformerFFN
@@ -31,7 +32,9 @@ from arglib import add_argument
 logger = getLogger()
 
 
-class Trainer(object):
+class Trainer:
+
+    add_argument('freeze_emb', dtype=bool, default=False, msg='Freeze embeddings.')
 
     add_argument('ep_add_noise', default=False, dtype=bool)
 
@@ -114,10 +117,15 @@ class Trainer(object):
         self.best_metrics = {metric: (-1e12 if biggest else 1e12) for (metric, biggest) in self.metrics}
 
         # training statistics
-        self.epoch = 0
-        self.n_iter = 0
-        self.n_total_iter = 0
-        self.n_sentences = 0
+        self.tracker = Tracker()
+        self.tracker.add_track('epoch')
+        self.tracker.add_track('n_iter')
+        self.tracker.add_track('n_total_iter')
+        self.tracker.add_track('n_sentences')
+        self.tracker.add_update_fn('epoch', 'add')
+        self.tracker.add_update_fn('n_iter', 'add')
+        self.tracker.add_update_fn('n_total_iter', 'add')
+        self.tracker.add_update_fn('n_sentences', 'addx')
         self.stats = OrderedDict(
             [('processed_s', 0), ('processed_w', 0)] +
             [('CLM-%s' % l, []) for l in params.langs] +
@@ -146,6 +154,14 @@ class Trainer(object):
         params = self.params
         self.parameters = {}
         named_params = []
+
+        # Freeze embeddings if necessary.
+        if params.freeze_emb:
+            for name in self.MODEL_NAMES:
+                p = getattr(self, name).embeddings.weight
+                p.requires_grad = False
+
+        # Obtain trainable parameters.
         for name in self.MODEL_NAMES:
             named_params.extend([(k, p) for k, p in getattr(self, name).named_parameters() if p.requires_grad])
 
@@ -159,7 +175,8 @@ class Trainer(object):
 
         # log
         for k, v in self.parameters.items():
-            logger.info("Found %i parameters in %s." % (len(v), k))
+            total = sum([p.nelement() for p in v])
+            logger.info("Found %i trainable parameters in %s, total size %d." % (len(v), k, total))
             assert len(v) >= 1
 
     def set_optimizers(self):
@@ -230,7 +247,7 @@ class Trainer(object):
 
         # AMP optimization
         else:
-            if self.n_iter % params.accumulate_gradients == 0:
+            if self.tracker.n_iter % params.accumulate_gradients == 0:
                 with apex.amp.scale_loss(loss, optimizers) as scaled_loss:
                     scaled_loss.backward()
                 if params.clip_grad_norm > 0:
@@ -250,19 +267,19 @@ class Trainer(object):
         """
         End of iteration.
         """
-        self.n_iter += 1
-        self.n_total_iter += 1
-        update_lambdas(self.params, self.n_total_iter)
+        self.tracker.update('n_iter')
+        self.tracker.update('n_total_iter')
+        update_lambdas(self.params, self.tracker.n_total_iter)
         self.print_stats()
 
     def print_stats(self):
         """
         Print statistics about the training.
         """
-        if self.n_total_iter % 5 != 0:
+        if self.tracker.n_total_iter % 5 != 0:
             return
 
-        s_iter = "%7i - " % self.n_total_iter
+        s_iter = "%7i - " % self.tracker.n_total_iter
         s_stat = ' || '.join([
             '{}: {:7.4f}'.format(k, np.mean(v)) for k, v in self.stats.items()
             if type(v) is list and len(v) > 0
@@ -523,8 +540,8 @@ class Trainer(object):
         logger.info("Saving %s to %s ..." % (name, path))
 
         data = {
-            'epoch': self.epoch,
-            'n_total_iter': self.n_total_iter,
+            'epoch': self.tracker.epoch,
+            'n_total_iter': self.tracker.n_total_iter,
             'best_metrics': self.best_metrics,
             'best_stopping_criterion': self.best_stopping_criterion,
         }
@@ -579,11 +596,12 @@ class Trainer(object):
                     param_group['lr'] = self.optimizers[name].get_lr_for_step(param_group['num_updates'])
 
         # reload main metrics
-        self.epoch = data['epoch'] + 1
-        self.n_total_iter = data['n_total_iter']
+        self.tracker.epoch = data['epoch'] + 1
+        self.tracker.n_total_iter = data['n_total_iter']
         self.best_metrics = data['best_metrics']
         self.best_stopping_criterion = data['best_stopping_criterion']
-        logger.warning(f"Checkpoint reloaded. Resuming at epoch {self.epoch} / iteration {self.n_total_iter} ...")
+        logger.warning(
+            f"Checkpoint reloaded. Resuming at epoch {self.tracker.epoch} / iteration {self.tracker.n_total_iter} ...")
 
     def save_periodic(self):
         """
@@ -591,8 +609,11 @@ class Trainer(object):
         """
         if not self.params.is_master:
             return
-        if self.params.save_periodic > 0 and self.epoch % self.params.save_periodic == 0:
-            self.save_checkpoint('periodic-%i' % self.epoch, include_optimizers=False)
+        # NOTE(j_luo) if save_periodic_step is specified, use this to override save_periodic_epoch.
+        if self.params.save_periodic_step > 0 and self.tracker.n_total_iter % self.params.save_periodic_step == 0:
+            self.save_checkpoint('periodic-%s' % self.tracker.now, include_optimizers=False)
+        elif self.params.save_periodic_epoch > 0 and self.tracker.epoch % self.params.save_periodic_epoch == 0:
+            self.save_checkpoint('periodic-%s' % self.tracker.now, include_optimizers=False)
 
     def save_best_model(self, scores):
         """
@@ -610,7 +631,7 @@ class Trainer(object):
                 logger.info('New best score for %s: %.6f' % (metric, scores[metric]))
                 self.save_checkpoint('best-%s' % metric, include_optimizers=False)
 
-    def end_epoch(self, scores):
+    def end_interval(self, scores):
         """
         End the epoch.
         """
@@ -634,7 +655,6 @@ class Trainer(object):
                     os.system('scancel ' + os.environ['SLURM_JOB_ID'])
                 exit()
         self.save_checkpoint('checkpoint', include_optimizers=True)
-        self.epoch += 1
 
     def round_batch(self, x, lengths, positions, langs):
         """
@@ -713,7 +733,7 @@ class Trainer(object):
         self.optimize(loss)
 
         # number of processed sentences / words
-        self.n_sentences += params.batch_size
+        self.tracker.update('n_sentences', params.batch_size)
         self.stats['processed_s'] += lengths.size(0)
         self.stats['processed_w'] += pred_mask.sum().item()
 
@@ -749,7 +769,7 @@ class Trainer(object):
         self.optimize(loss)
 
         # number of processed sentences / words
-        self.n_sentences += params.batch_size
+        self.tracker.update('n_sentences', params.batch_size)
         self.stats['processed_s'] += lengths.size(0)
         self.stats['processed_w'] += pred_mask.sum().item()
 
@@ -773,7 +793,7 @@ class Trainer(object):
         (x1, len1), (x2, len2) = self.get_batch('align', lang1, lang2)
         bs = len1.size(0)
         if bs == 1:  # can happen (although very rarely), which makes the negative loss fail
-            self.n_sentences += params.batch_size
+            self.tracker.update('n_sentences', params.batch_size)
             return
 
         # associate lang1 sentences with their translations, and random lang2 sentences
@@ -806,7 +826,7 @@ class Trainer(object):
         self.optimize(loss)
 
         # number of processed sentences / words
-        self.n_sentences += params.batch_size
+        self.tracker.update('n_sentences',params.batch_size)
         self.stats['processed_s'] += bs
         self.stats['processed_w'] += lengths.sum().item()
 
@@ -910,7 +930,7 @@ class EncDecTrainer(Trainer):
         self.optimize(loss)
 
         # number of processed sentences / words
-        self.n_sentences += params.batch_size
+        self.tracker.update('n_sentences', params.batch_size)
         self.stats['processed_s'] += len2.size(0)
         self.stats['processed_w'] += (len2 - 1).sum().item()
 
@@ -977,6 +997,6 @@ class EncDecTrainer(Trainer):
         self.optimize(loss)
 
         # number of processed sentences / words
-        self.n_sentences += params.batch_size
+        self.tracker.update('n_sentences', params.batch_size)
         self.stats['processed_s'] += len1.size(0)
         self.stats['processed_w'] += (len1 - 1).sum().item()

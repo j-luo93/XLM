@@ -110,7 +110,8 @@ class Evaluator(object):
 
         # hacks to reduce evaluation time when using many languages
         if len(self.params.langs) > 30:
-            eval_lgs = set(["ar", "bg", "de", "el", "en", "es", "fr", "hi", "ru", "sw", "th", "tr", "ur", "vi", "zh", "ab", "ay", "bug", "ha", "ko", "ln", "min", "nds", "pap", "pt", "tg", "to", "udm", "uk", "zh_classical"])
+            eval_lgs = set(["ar", "bg", "de", "el", "en", "es", "fr", "hi", "ru", "sw", "th", "tr", "ur", "vi", "zh",
+                            "ab", "ay", "bug", "ha", "ko", "ln", "min", "nds", "pap", "pt", "tg", "to", "udm", "uk", "zh_classical"])
             eval_lgs = set(["ar", "bg", "de", "el", "en", "es", "fr", "hi", "ru", "sw", "th", "tr", "ur", "vi", "zh"])
             subsample = 10 if (data_set == 'test' or lang1 not in eval_lgs) else 5
             n_sentences = 600 if (data_set == 'test' or lang1 not in eval_lgs) else 1500
@@ -221,7 +222,7 @@ class Evaluator(object):
         Run all evaluations.
         """
         params = self.params
-        scores = OrderedDict({'epoch': trainer.epoch})
+        scores = OrderedDict({'now': trainer.tracker.now})
 
         with torch.no_grad():
 
@@ -243,12 +244,16 @@ class Evaluator(object):
                 # report average metrics per language
                 _clm_mono = [l1 for (l1, l2) in params.clm_steps if l2 is None]
                 if len(_clm_mono) > 0:
-                    scores['%s_clm_ppl' % data_set] = np.mean([scores['%s_%s_clm_ppl' % (data_set, lang)] for lang in _clm_mono])
-                    scores['%s_clm_acc' % data_set] = np.mean([scores['%s_%s_clm_acc' % (data_set, lang)] for lang in _clm_mono])
+                    scores['%s_clm_ppl' % data_set] = np.mean(
+                        [scores['%s_%s_clm_ppl' % (data_set, lang)] for lang in _clm_mono])
+                    scores['%s_clm_acc' % data_set] = np.mean(
+                        [scores['%s_%s_clm_acc' % (data_set, lang)] for lang in _clm_mono])
                 _mlm_mono = [l1 for (l1, l2) in params.mlm_steps if l2 is None]
                 if len(_mlm_mono) > 0:
-                    scores['%s_mlm_ppl' % data_set] = np.mean([scores['%s_%s_mlm_ppl' % (data_set, lang)] for lang in _mlm_mono])
-                    scores['%s_mlm_acc' % data_set] = np.mean([scores['%s_%s_mlm_acc' % (data_set, lang)] for lang in _mlm_mono])
+                    scores['%s_mlm_ppl' % data_set] = np.mean(
+                        [scores['%s_%s_mlm_ppl' % (data_set, lang)] for lang in _mlm_mono])
+                    scores['%s_mlm_acc' % data_set] = np.mean(
+                        [scores['%s_%s_mlm_acc' % (data_set, lang)] for lang in _mlm_mono])
 
         return scores
 
@@ -288,7 +293,8 @@ class Evaluator(object):
                 langs = x.clone().fill_(lang1_id) if params.n_langs > 1 else None
             else:
                 (sent1, len1), (sent2, len2) = batch
-                x, lengths, positions, langs = concat_batches(sent1, len1, lang1_id, sent2, len2, lang2_id, params.pad_index, params.eos_index, reset_positions=True)
+                x, lengths, positions, langs = concat_batches(
+                    sent1, len1, lang1_id, sent2, len2, lang2_id, params.pad_index, params.eos_index, reset_positions=True)
 
             # words to predict
             alen = torch.arange(lengths.max(), dtype=torch.long, device=lengths.device)
@@ -363,7 +369,8 @@ class Evaluator(object):
                 langs = x.clone().fill_(lang1_id) if params.n_langs > 1 else None
             else:
                 (sent1, len1), (sent2, len2) = batch
-                x, lengths, positions, langs = concat_batches(sent1, len1, lang1_id, sent2, len2, lang2_id, params.pad_index, params.eos_index, reset_positions=True)
+                x, lengths, positions, langs = concat_batches(
+                    sent1, len1, lang1_id, sent2, len2, lang2_id, params.pad_index, params.eos_index, reset_positions=True)
 
             # words to predict
             x, y, pred_mask = self.mask_out(x, lengths, rng)
@@ -509,7 +516,7 @@ class EncDecEvaluator(Evaluator):
         if eval_bleu:
 
             # hypothesis / reference paths
-            hyp_name = 'hyp{0}.{1}-{2}.{3}.txt'.format(scores['epoch'], lang1, lang2, data_set)
+            hyp_name = 'hyp{0}.{1}-{2}.{3}.txt'.format(scores['now'], lang1, lang2, data_set)
             hyp_path = os.path.join(params.hyp_path, hyp_name)
             ref_path = params.ref_paths[(lang1, lang2, data_set)]
 

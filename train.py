@@ -5,7 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-import argparse
 import json
 import random
 
@@ -13,10 +12,9 @@ from arglib import add_argument, add_registry, parse_args
 from src.data.loader import check_data_params, load_data
 from src.evaluation.evaluator import EncDecEvaluator, SingleEvaluator
 from src.model import build_model, check_model_params
-from src.model.memory import HashingMemory
 from src.slurm import init_distributed_mode, init_signal_handler
 from src.trainer import EncDecTrainer, SingleTrainer
-from src.utils import bool_flag, initialize_exp, set_sampling_probs, shuf_order
+from src.utils import initialize_exp, set_sampling_probs, shuf_order
 from train_cfg import reg
 
 
@@ -29,8 +27,12 @@ def add_main_arguments():
                  msg="Experiment dump path")
     add_argument("exp_name", dtype=str, default="",
                  msg="Experiment name")
-    add_argument("save_periodic", dtype=int, default=0,
-                 msg="Save the model periodically (0 to disable)")
+    add_argument("save_periodic_epoch", dtype=int, default=0,
+                 msg="Save the model periodically every few epochs (0 to disable)")
+    add_argument("save_periodic_step", dtype=int, default=0,
+                 msg="Save the model periodically every few steps (0 to disable)")
+    add_argument("eval_interval", dtype=int, default=0,
+                 msg="evaluate the model every few steps (0 to disable)")
     add_argument("exp_id", dtype=str, default="",
                  msg="Experiment ID")
     add_argument("log_level", dtype=str, default="INFO",
@@ -252,7 +254,7 @@ def main(params):
     # language model training
     for _ in range(params.max_epoch):
 
-        logger.info("============ Starting epoch %i ... ============" % trainer.epoch)
+        logger.info("============ Starting epoch %i ... ============" % trainer.tracker.epoch)
 
         trainer.n_sentences = 0
 
@@ -288,10 +290,15 @@ def main(params):
 
             trainer.iter()
 
-        logger.info("============ End of epoch %i ============" % trainer.epoch)
+            if params.eval_interval > 0 and trainer.tracker.n_total_iter % params.eval_interval == 0:
+                # evaluate perplexity
+                scores = evaluator.run_all_evals(trainer)
+                # end of an evaluation interval.
+                trainer.save_best_model(scores)
+                trainer.save_periodic()
+                trainer.end_interval(scores)
 
-        # evaluate perplexity
-        scores = evaluator.run_all_evals(trainer)
+        logger.info("============ End of epoch %i ============" % trainer.tracker.epoch)
 
         # print / JSON log
         for k, v in scores.items():
@@ -299,10 +306,7 @@ def main(params):
         if params.is_master:
             logger.info("__log__:%s" % json.dumps(scores))
 
-        # end of epoch
-        trainer.save_best_model(scores)
-        trainer.save_periodic()
-        trainer.end_epoch(scores)
+        trainer.tracker.update('epoch')
 
 
 if __name__ == '__main__':
