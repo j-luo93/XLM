@@ -2,15 +2,16 @@
 Largely based on get-daata-nmt.sh
 '''
 
+import logging
+import random
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-import random
+from typing import List
 
 from arglib import add_argument, g, parse_args
 from trainlib import create_logger
-import logging
 
 MAIN_DIR = Path('/scratch/j_luo/eat-nmt/XLM/')
 DATA_DIR = Path('/scratch/j_luo/data/multi30k/')
@@ -68,8 +69,8 @@ class Dataset:
         self.gz_path = out_dir / 'raw' / f'{self.name}.{self.lang}.gz'
         self.raw_path = self.gz_path.with_suffix('')
         self.plain_path = self.raw_path.with_suffix(f'{self.raw_path.suffix}.tok')
-        self.bpe_path = out_dir / 'processed' / f'{self.name}.{self.pair}.{self.lang}.bpe'
-        self.bin_path = self.bpe_path.with_suffix('.bpe.pth')
+        self.bpe_path = out_dir / 'processed' / f'{self.name}.{self.pair}.{self.lang}'
+        self.bin_path = self.bpe_path.with_suffix('.pth')
 
     def take_subset(self, indices, new_bpe_path):
         if not check_exists(new_bpe_path):
@@ -79,7 +80,7 @@ class Dataset:
                     if i in indices:
                         fout.write(line)
         self.bpe_path = new_bpe_path
-        self.bin_path = self.bpe_path.with_suffix('.bpe.pth')
+        self.bin_path = self.bpe_path.with_suffix('.pth')
 
 
 class Datasets:
@@ -91,6 +92,7 @@ class Datasets:
     def add(self, lang, name, url):
         dataset = Dataset(self.pair, lang, name, url)
         key = (name, lang)
+        assert key not in self.datasets
         self.datasets[key] = dataset
 
     def __getitem__(self, key):
@@ -98,6 +100,25 @@ class Datasets:
 
     def __iter__(self):
         yield from self.datasets.values()
+
+    def merge(self, names: List[str], lang: str, merged_name: str):
+        """
+        Call this to merge multiple datasets into a new one. Should be called before decompression.
+        """
+        # Create a new one.
+        keys = [(name, lang) for name in names]
+        merged_dataset = Dataset(self.pair, lang, merged_name, '')
+
+        # Cat every gz file together.
+        all_gz_paths = ' '.join([str(self[key].gz_path) for key in keys])
+        subprocess.call(f'cat {all_gz_paths} > {merged_dataset.gz_path}', shell=True)
+
+        # Delete old datasets.
+        for key in keys:
+            del self.datasets[key]
+
+        # Add the new one.
+        self.datasets[merged_name] = merged_dataset
 
 
 def check_exists(path):
@@ -135,7 +156,7 @@ if __name__ == "__main__":
     # --------------------------- Download files first. -------------------------- #
 
     # For test set, we need to figure out what to download.
-    test_to_download = test_sets[lang1] & test_sets[lang2]
+    test_to_download = [f'test_{dataset.value}' for dataset in test_sets[lang1] & test_sets[lang2]]
 
     # Get all paths and urls.
     for lang in g.langs:
@@ -148,21 +169,25 @@ if __name__ == "__main__":
         # Dev set.
         datasets.add(
             lang,
-            'dev',
+            'valid',
             f'{MULTI30K_DOMAIN_URL}/val.{lang}.gz?raw=true'
         )
         # Test set.
         for dataset in test_to_download:
             datasets.add(
                 lang,
-                f'test_{dataset.value}',
-                f'{MULTI30K_DOMAIN_URL}/test_{dataset.value}.{lang}.gz?raw=true'
+                dataset,
+                f'{MULTI30K_DOMAIN_URL}/{dataset}.{lang}.gz?raw=true'
             )
 
     # Now try to download everything.
     for dataset in datasets:
         if not check_exists(dataset.gz_path):
             subprocess.call(f'wget {dataset.url} -O {dataset.gz_path}', shell=True)
+
+    # Merge all test sets.
+    for lang in g.langs:
+        datasets.merge(test_to_download, lang, 'test')
 
     # --------------------------- Decompress everything -------------------------- #
 
