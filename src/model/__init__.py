@@ -69,8 +69,10 @@ def check_model_params(params):
         params.mem_enc_positions = [(int(x[:-1]), 'after') if x[-1] == '+' else (int(x), 'in') for x in s_enc]
         params.mem_dec_positions = [(int(x[:-1]), 'after') if x[-1] == '+' else (int(x), 'in') for x in s_dec]
         assert len(params.mem_enc_positions) + len(params.mem_dec_positions) > 0
-        assert len(params.mem_enc_positions) == 0 or 0 <= min([x[0] for x in params.mem_enc_positions]) <= max([x[0] for x in params.mem_enc_positions]) <= params.n_layers - 1
-        assert len(params.mem_dec_positions) == 0 or 0 <= min([x[0] for x in params.mem_dec_positions]) <= max([x[0] for x in params.mem_dec_positions]) <= params.n_layers - 1
+        assert len(params.mem_enc_positions) == 0 or 0 <= min([x[0] for x in params.mem_enc_positions]) <= max(
+            [x[0] for x in params.mem_enc_positions]) <= params.n_layers - 1
+        assert len(params.mem_dec_positions) == 0 or 0 <= min([x[0] for x in params.mem_dec_positions]) <= max(
+            [x[0] for x in params.mem_dec_positions]) <= params.n_layers - 1
 
     # reload pretrained word embeddings
     if params.reload_emb != '':
@@ -119,7 +121,8 @@ def build_model(params, dico):
         # reload a pretrained model
         if params.reload_model != '':
             logger.info("Reloading model from %s ..." % params.reload_model)
-            reloaded = torch.load(params.reload_model, map_location=lambda storage, loc: storage.cuda(params.local_rank))['model']
+            reloaded = torch.load(params.reload_model, map_location=lambda storage,
+                                  loc: storage.cuda(params.local_rank))['model']
             if all([k.startswith('module.') for k in reloaded.keys()]):
                 reloaded = {k[len('module.'):]: v for k, v in reloaded.items()}
 
@@ -134,13 +137,16 @@ def build_model(params, dico):
             model.load_state_dict(reloaded)
 
         logger.info("Model: {}".format(model))
-        logger.info("Number of parameters (model): %i" % sum([p.numel() for p in model.parameters() if p.requires_grad]))
+        logger.info("Number of parameters (model): %i" %
+                    sum([p.numel() for p in model.parameters() if p.requires_grad]))
 
         return model.cuda()
 
     else:
         # build
-        encoder = TransformerModel(params, dico, is_encoder=True, with_output=True)  # TODO: only output when necessary - len(params.clm_steps + params.mlm_steps) > 0
+        # NOTE set with_output to False, see https://github.com/facebookresearch/XLM/issues/109
+        # TODO: only output when necessary - len(params.clm_steps + params.mlm_steps) > 0
+        encoder = TransformerModel(params, dico, is_encoder=True, with_output=False)
         decoder = TransformerModel(params, dico, is_encoder=False, with_output=True)
 
         # reload pretrained word embeddings
@@ -179,7 +185,9 @@ def build_model(params, dico):
 
         logger.debug("Encoder: {}".format(encoder))
         logger.debug("Decoder: {}".format(decoder))
-        logger.info("Number of parameters (encoder): %i" % sum([p.numel() for p in encoder.parameters() if p.requires_grad]))
-        logger.info("Number of parameters (decoder): %i" % sum([p.numel() for p in decoder.parameters() if p.requires_grad]))
+        logger.info("Number of parameters (encoder): %i" %
+                    sum([p.numel() for p in encoder.parameters() if p.requires_grad]))
+        logger.info("Number of parameters (decoder): %i" %
+                    sum([p.numel() for p in decoder.parameters() if p.requires_grad]))
 
         return encoder.cuda(), decoder.cuda()
