@@ -56,3 +56,15 @@ class DeEnBase(SingleGpuParams):
     src_lang = 'de'
     tgt_lang = 'en'
     reload_model = f'save/mlm_ende_1024.pth,save/mlm_ende_1024.pth'
+
+
+@reg
+class DeEnMulti30KBaseline(DeEnBase):
+
+    def __post_init__(self):
+        super().__post_init__()
+        cls = type(self)
+        src = cls.src_lang
+        tgt = cls.tgt_lang
+        self.data_path = f'./data/multi30k/{src}-{tgt}/processed'
+        self.exp_name = f'unsupMT_multi30K_{src}{tgt}'

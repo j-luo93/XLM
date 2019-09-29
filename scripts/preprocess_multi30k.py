@@ -70,7 +70,7 @@ class Dataset:
         self.raw_path = self.gz_path.with_suffix('')
         self.plain_path = self.raw_path.with_suffix(f'{self.raw_path.suffix}.tok')
         self.bpe_path = out_dir / 'processed' / f'{self.name}.{self.pair}.{self.lang}'
-        self.bin_path = self.bpe_path.with_suffix('.pth')
+        self.bin_path = self.bpe_path.with_suffix(f'{self.bpe_path.suffix}.pth')
 
     def take_subset(self, indices, new_bpe_path):
         if not check_exists(new_bpe_path):
@@ -80,7 +80,7 @@ class Dataset:
                     if i in indices:
                         fout.write(line)
         self.bpe_path = new_bpe_path
-        self.bin_path = self.bpe_path.with_suffix('.pth')
+        self.bin_path = self.bpe_path.with_suffix(f'{self.bpe_path.suffix}.pth')
 
 
 class Datasets:
@@ -118,7 +118,7 @@ class Datasets:
             del self.datasets[key]
 
         # Add the new one.
-        self.datasets[merged_name] = merged_dataset
+        self.datasets[(merged_name, lang)] = merged_dataset
 
 
 def check_exists(path):
@@ -223,8 +223,8 @@ if __name__ == "__main__":
     # For train sets, we need to take a nonoverlapping subset for lang1 and lang2.
     train1 = datasets[('train', lang1)]
     train2 = datasets[('train', lang2)]
-    new_bpe_path1 = DATA_DIR / pair / 'processed' / f'{train1.name}.{lang1}.bpe'
-    new_bpe_path2 = DATA_DIR / pair / 'processed' / f'{train2.name}.{lang2}.bpe'
+    new_bpe_path1 = DATA_DIR / pair / 'processed' / f'{train1.name}.{lang1}'
+    new_bpe_path2 = DATA_DIR / pair / 'processed' / f'{train2.name}.{lang2}'
     len1 = int(subprocess.check_output(f'cat {train1.bpe_path} | wc -l', shell=True))
     len2 = int(subprocess.check_output(f'cat {train2.bpe_path} | wc -l', shell=True))
     if len1 != len2:
@@ -260,9 +260,10 @@ if __name__ == "__main__":
 
     # -------- Link monolingual validation and test data to parallel data -------- #
 
+    print(datasets.datasets.keys())
     for dataset in datasets:
         if dataset.name != 'train':
-            link_path = DATA_DIR / pair / 'processed' / f'{dataset.name}.{dataset.lang}.bpe.pth'
+            link_path = DATA_DIR / pair / 'processed' / f'{dataset.name}.{dataset.lang}.pth'
             if not check_exists(link_path):
                 link_path.symlink_to(dataset.bin_path)
                 logging.imp(f'Binarized data linked in {link_path}')
