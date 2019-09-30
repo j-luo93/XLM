@@ -7,6 +7,11 @@ reg = Registry('train')
 
 @dataclass
 class ParamsFromXLM:
+    # NOTE(j_luo) These are class variables.
+    SRC_LANG = ''
+    TGT_LANG = ''
+
+    # NOTE(j_luo) These are type-annotated therefore will be picked up by arglib.
     attention_dropout: float = 0.1
     batch_size: int = 32
     bptt: int = 256
@@ -28,8 +33,8 @@ class ParamsFromXLM:
 
     def __post_init__(self):
         cls = type(self)
-        src = cls.src_lang
-        tgt = cls.tgt_lang
+        src = cls.SRC_LANG
+        tgt = cls.TGT_LANG
         self.ae_steps = f'{src},{tgt}'
         self.bt_steps = f'{src}-{tgt}-{src},{tgt}-{src}-{tgt}'
         self.lgs = f'{src}-{tgt}'
@@ -46,16 +51,16 @@ class SingleGpuParams(ParamsFromXLM):
 
 @reg
 class EnFrBase(SingleGpuParams):
-    src_lang = 'en'
-    tgt_lang = 'fr'
-    reload_model = f'save/mlm_enfr_1024.pth,save/mlm_enfr_1024.pth'
+    SRC_LANG = 'en'
+    TGT_LANG = 'fr'
+    reload_model: str = f'save/mlm_enfr_1024.pth,save/mlm_enfr_1024.pth'
 
 
 @reg
 class DeEnBase(SingleGpuParams):
-    src_lang = 'de'
-    tgt_lang = 'en'
-    reload_model = f'save/mlm_ende_1024.pth,save/mlm_ende_1024.pth'
+    SRC_LANG = 'de'
+    TGT_LANG = 'en'
+    reload_model: str = f'save/mlm_ende_1024.pth,save/mlm_ende_1024.pth'
 
 
 @reg

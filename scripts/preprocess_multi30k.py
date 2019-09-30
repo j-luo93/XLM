@@ -1,5 +1,5 @@
 '''
-Largely based on get-daata-nmt.sh
+Largely based on get-data-nmt.sh
 '''
 
 import logging
