@@ -124,6 +124,12 @@ dmypy.json
 # End of https://www.gitignore.io/api/python
 
 # tools, data, and dumped models
-# /tools
+/tools
 /data
 /dumped
+
+# Extra directories to ignore.
+/save
+.vscode
+/apex
+
