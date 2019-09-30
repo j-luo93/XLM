@@ -6,3 +6,6 @@
 	path = trainlib
 	url = git@github.com:j-luo93/trainlib.git
 	branch = master
+[submodule "devlib"]
+	path = devlib
+	url = git@github.com:j-luo93/devlib.git
