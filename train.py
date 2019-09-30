@@ -209,7 +209,7 @@ def add_main_arguments():
                  msg="Master port (for multi-node SLURM jobs)")
 
     # Add registry.
-    add_registry('train_cfg', reg)
+    add_registry(reg)
 
 
 def main(params):

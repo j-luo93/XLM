@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from arglib import Registry
 
-reg = Registry('train')
+reg = Registry('train_cfg')
 
 
 @dataclass
