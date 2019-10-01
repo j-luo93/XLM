@@ -237,10 +237,10 @@ if __name__ == "__main__":
     train2.take_subset(indices2, new_bpe_path2)
 
     # Extract source and target vocabularies.
-    vocab_paths = dict()
+    train_paths = dict()
     for dataset in [train1, train2]:
         vocab_path = dataset.bpe_path.parent / f'vocab.{dataset.lang}'
-        vocab_paths[dataset.lang] = vocab_path
+        train_paths[dataset.lang] = dataset.bpe_path
         if not check_exists(vocab_path):
             subprocess.call(f'{FASTBPE} getvocab {dataset.bpe_path} > {vocab_path}', shell=True)
             logging.imp(f'Training vocab for {dataset.lang} saved in {vocab_path}.')
@@ -248,7 +248,7 @@ if __name__ == "__main__":
     # Extract full vocab.
     full_vocab_path = out_dir / 'processed' / f'vocab.{pair}'
     if not check_exists(full_vocab_path):
-        subprocess.call(f'{FASTBPE} getvocab {vocab_paths[lang1]} {vocab_paths[lang2]} > {full_vocab_path}', shell=True)
+        subprocess.call(f'{FASTBPE} getvocab {train_paths[lang1]} {train_paths[lang2]} > {full_vocab_path}', shell=True)
         logging.imp(f'Full vocab saved in {full_vocab_path}.')
 
     # ------------------------------- Binarize data ------------------------------ #

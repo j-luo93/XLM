@@ -69,7 +69,7 @@ class DeEnMulti30KBaseline(DeEnBase):
     def __post_init__(self):
         super().__post_init__()
         cls = type(self)
-        src = cls.src_lang
-        tgt = cls.tgt_lang
+        src = cls.SRC_LANG
+        tgt = cls.TGT_LANG
         self.data_path = f'./data/multi30k/{src}-{tgt}/processed'
         self.exp_name = f'unsupMT_multi30K_{src}{tgt}'

@@ -5,14 +5,17 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-from logging import getLogger
 import os
+from logging import getLogger
+
 import torch
 
-from .pretrain import load_embeddings
-from .transformer import DECODER_ONLY_PARAMS, TransformerModel  # , TRANSFORMER_LAYER_PARAMS
-from .memory import HashingMemory
+from arglib import add_argument, g
 
+from .memory import HashingMemory
+from .pretrain import load_embeddings
+from .transformer import (DECODER_ONLY_PARAMS,  # , TRANSFORMER_LAYER_PARAMS
+                          TransformerModel)
 
 logger = getLogger()
 
@@ -105,10 +108,15 @@ def set_pretrain_emb(model, dico, word2id, embeddings):
                 % (n_found, len(dico), 100. * n_found / len(dico)))
 
 
+add_argument('old_data_paths', nargs=2, dtype=str,
+             msg='paths (first src, second tgt) to the old data to extract the vocabularies.')
+
+
 def build_model(params, dico):
     """
     Build model.
     """
+
     if params.encoder_only:
         # build
         model = TransformerModel(params, dico, is_encoder=True, with_output=True)
@@ -123,6 +131,7 @@ def build_model(params, dico):
             logger.info("Reloading model from %s ..." % params.reload_model)
             reloaded = torch.load(params.reload_model, map_location=lambda storage,
                                   loc: storage.cuda(params.local_rank))['model']
+
             if all([k.startswith('module.') for k in reloaded.keys()]):
                 reloaded = {k[len('module.'):]: v for k, v in reloaded.items()}
 
@@ -160,6 +169,25 @@ def build_model(params, dico):
             enc_path, dec_path = params.reload_model.split(',')
             assert not (enc_path == '' and dec_path == '')
 
+            if g.old_data_paths:
+                evp, dvp = g.old_data_paths
+                ev = torch.load(evp)['dico']
+                dv = torch.load(dvp)['dico']
+                nevp = params.mono_dataset[params.langs[0]]['valid']
+                ndvp = params.mono_dataset[params.langs[1]]['valid']
+                nev = torch.load(nevp)['dico']
+                ndv = torch.load(ndvp)['dico']
+
+            def remap_vocab_ids(old, new, old_state, name, new_w):
+                old_w = old_state[name]
+                assert len(old) == len(old.word2id) == len(old.id2word) == len(old_w)
+                assert len(new) == len(new.word2id) == len(new.id2word) == len(new_w)
+                idx = list()
+                for new_i, w in new.id2word.items():
+                    old_i = old.word2id[w]
+                    idx.append(old_i)
+                old_state[name] = old_w[idx]
+
             # reload encoder
             if enc_path != '':
                 logger.info("Reloading encoder from %s ..." % enc_path)
@@ -168,6 +196,8 @@ def build_model(params, dico):
                 if all([k.startswith('module.') for k in enc_reload.keys()]):
                     enc_reload = {k[len('module.'):]: v for k, v in enc_reload.items()}
                 # NOTE(j_luo) set strict to False, see https://github.com/facebookresearch/XLM/issues/109
+                if g.old_data_paths:
+                    remap_vocab_ids(ev, nev, enc_reload, 'embeddings.weight', encoder.embeddings.weight)
                 encoder.load_state_dict(enc_reload, strict=False)
 
             # reload decoder
@@ -182,6 +212,10 @@ def build_model(params, dico):
                         if name % i not in dec_reload:
                             logger.warning("Parameter %s not found." % (name % i))
                             dec_reload[name % i] = decoder.state_dict()[name % i]
+                if g.old_data_paths:
+                    remap_vocab_ids(dv, ndv, dec_reload, 'embeddings.weight', decoder.embeddings.weight)
+                    remap_vocab_ids(dv, ndv, dec_reload, 'pred_layer.proj.weight', decoder.pred_layer.proj.weight)
+                    remap_vocab_ids(dv, ndv, dec_reload, 'pred_layer.proj.bias', decoder.pred_layer.proj.bias)
                 decoder.load_state_dict(dec_reload, strict=False)
 
         logger.debug("Encoder: {}".format(encoder))
