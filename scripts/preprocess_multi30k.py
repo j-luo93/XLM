@@ -5,12 +5,16 @@ Largely based on get-data-nmt.sh
 import logging
 import random
 import subprocess
+from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import List
 
+import stanfordnlp
+
 from arglib import add_argument, g, parse_args
+from devlib import initiate
 from trainlib import create_logger
 
 MAIN_DIR = Path('/scratch/j_luo/eat-nmt/XLM/')
@@ -68,9 +72,13 @@ class Dataset:
         out_dir = DATA_DIR / self.pair
         self.gz_path = out_dir / 'raw' / f'{self.name}.{self.lang}.gz'
         self.raw_path = self.gz_path.with_suffix('')
-        self.plain_path = self.raw_path.with_suffix(f'{self.raw_path.suffix}.tok')
+        self.plain_path = self.raw_path.with_suffix(f'.{self.lang}.tok')
         self.bpe_path = out_dir / 'processed' / f'{self.name}.{self.pair}.{self.lang}'
-        self.bin_path = self.bpe_path.with_suffix(f'{self.bpe_path.suffix}.pth')
+        self._reset_paths()
+
+    def _reset_paths(self):
+        self.bin_path = self.bpe_path.with_suffix(f'.{self.lang}.pth')
+        self.eat_path = self.bpe_path.with_suffix(f'.{self.lang}.eat')
 
     def take_subset(self, indices, new_bpe_path):
         if not check_exists(new_bpe_path):
@@ -80,7 +88,7 @@ class Dataset:
                     if i in indices:
                         fout.write(line)
         self.bpe_path = new_bpe_path
-        self.bin_path = self.bpe_path.with_suffix(f'{self.bpe_path.suffix}.pth')
+        self._reset_paths()
 
 
 class Datasets:
@@ -100,6 +108,16 @@ class Datasets:
 
     def __iter__(self):
         yield from self.datasets.values()
+
+    def groupby(self, name):
+        """
+        Group datasets according to the values of a named attribute.
+        """
+        ret = defaultdict(list)
+        for dataset in self.datasets.values():
+            value = getattr(dataset, name)
+            ret[value].append(dataset)
+        return ret
 
     def merge(self, names: List[str], lang: str, merged_name: str):
         """
@@ -129,11 +147,12 @@ def check_exists(path):
 
 
 if __name__ == "__main__":
-    create_logger()
+    initiate(logger=True, gpus=True)
 
     add_argument('langs', dtype=str, nargs=2)
     add_argument('codes', dtype=str)
     add_argument('seed', dtype=int, default=1234)
+    add_argument('eat', dtype=bool, default=False)
     parse_args()
 
     # Use random seed to make sure train split is persistent.
@@ -260,10 +279,32 @@ if __name__ == "__main__":
 
     # -------- Link monolingual validation and test data to parallel data -------- #
 
-    print(datasets.datasets.keys())
     for dataset in datasets:
         if dataset.name != 'train':
             link_path = DATA_DIR / pair / 'processed' / f'{dataset.name}.{dataset.lang}.pth'
             if not check_exists(link_path):
                 link_path.symlink_to(dataset.bin_path)
                 logging.imp(f'Binarized data linked in {link_path}')
+
+    # ------------------- Convert plain texts to EAT sequences ------------------- #
+
+    if g.eat:
+        datasets_by_lang = datasets.groupby('lang')
+        pipelines = dict()
+        for lang in g.langs:
+            for dataset in datasets_by_lang[lang]:
+                if not check_exists(dataset.eat_path):
+                    logging.info(f'Start parsing data in {dataset.plain_path}.')
+                    if lang not in pipelines:
+                        nlp = stanfordnlp.Pipeline(verbose=True, lang=dataset.lang, tokenize_pretokenized=True,
+                                                   use_gpu=True)  # This sets up a default neural pipeline.
+                        pipelines[lang] = nlp
+                    else:
+                        nlp = pipelines[lang]
+                    inputs = list()
+                    with Path(dataset.plain_path).open('r', encoding='utf8') as fin:
+                        for line in fin:
+                            inputs.append(line.strip().split())
+                    doc = nlp(inputs)
+                    doc.write_conll_to_file(dataset.eat_path)
+                    logging.imp(f'Parsed data stored in {dataset.eat_path}.')
