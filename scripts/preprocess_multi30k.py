@@ -2,33 +2,25 @@
 Largely based on get-data-nmt.sh
 '''
 
-import logging
 import random
-import subprocess
-from collections import defaultdict
-from dataclasses import dataclass
+from collections import namedtuple
 from enum import Enum
 from pathlib import Path
-from typing import List
-
-import stanfordnlp
 
 from arglib import add_argument, g, parse_args
 from devlib import initiate
-from trainlib import create_logger
+from devlib.preprocess.action import set_action_constant
+from devlib.preprocess.format_file import FormatFile
+from devlib.preprocess.pipeline import Pipeline
 
 MAIN_DIR = Path('/scratch/j_luo/eat-nmt/XLM/')
 DATA_DIR = Path('/scratch/j_luo/data/multi30k/')
 TOOLS_DIR = Path('/scratch/j_luo/eat-nmt/XLM/tools/')
 MULTI30K_DOMAIN_URL = 'https://github.com/multi30k/dataset/blob/master/data/task1/raw/'
-MOSES = TOOLS_DIR / 'mosesdecoder'
-REPLACE_UNICODE_PUNCT = MOSES / 'scripts/tokenizer/replace-unicode-punctuation.perl'
-NORM_PUNC = MOSES / 'scripts/tokenizer/normalize-punctuation.perl'
-REM_NON_PRINT_CHAR = MOSES / 'scripts/tokenizer/remove-non-printing-char.perl'
-TOKENIZER = MOSES / 'scripts/tokenizer/tokenizer.perl'
+MOSES_DIR = TOOLS_DIR / 'mosesdecoder'
 FASTBPE = TOOLS_DIR / 'fastBPE/fast'
-
 NUM_THREADS = 8
+EAT_DIR = Path('/scratch/j_luo/EAT/')
 
 
 class TestSet(Enum):
@@ -60,91 +52,7 @@ test_sets = {
     }
 }
 
-
-@dataclass
-class Dataset:
-    pair: str
-    lang: str
-    name: str
-    url: str
-
-    def __post_init__(self):
-        out_dir = DATA_DIR / self.pair
-        self.gz_path = out_dir / 'raw' / f'{self.name}.{self.lang}.gz'
-        self.raw_path = self.gz_path.with_suffix('')
-        self.plain_path = self.raw_path.with_suffix(f'.{self.lang}.tok')
-        self.bpe_path = out_dir / 'processed' / f'{self.name}.{self.pair}.{self.lang}'
-        self._reset_paths()
-
-    def _reset_paths(self):
-        self.bin_path = self.bpe_path.with_suffix(f'.{self.lang}.pth')
-        self.eat_path = self.bpe_path.with_suffix(f'.{self.lang}.eat')
-
-    def take_subset(self, indices, new_bpe_path):
-        if not check_exists(new_bpe_path):
-            indices = set(indices)
-            with self.bpe_path.open('r', encoding='utf8') as fin, new_bpe_path.open('w', encoding='utf8') as fout:
-                for i, line in enumerate(fin):
-                    if i in indices:
-                        fout.write(line)
-        self.bpe_path = new_bpe_path
-        self._reset_paths()
-
-
-class Datasets:
-
-    def __init__(self, pair):
-        self.datasets = dict()
-        self.pair = pair
-
-    def add(self, lang, name, url):
-        dataset = Dataset(self.pair, lang, name, url)
-        key = (name, lang)
-        assert key not in self.datasets
-        self.datasets[key] = dataset
-
-    def __getitem__(self, key):
-        return self.datasets[key]
-
-    def __iter__(self):
-        yield from self.datasets.values()
-
-    def groupby(self, name):
-        """
-        Group datasets according to the values of a named attribute.
-        """
-        ret = defaultdict(list)
-        for dataset in self.datasets.values():
-            value = getattr(dataset, name)
-            ret[value].append(dataset)
-        return ret
-
-    def merge(self, names: List[str], lang: str, merged_name: str):
-        """
-        Call this to merge multiple datasets into a new one. Should be called before decompression.
-        """
-        # Create a new one.
-        keys = [(name, lang) for name in names]
-        merged_dataset = Dataset(self.pair, lang, merged_name, '')
-
-        # Cat every gz file together.
-        all_gz_paths = ' '.join([str(self[key].gz_path) for key in keys])
-        subprocess.call(f'cat {all_gz_paths} > {merged_dataset.gz_path}', shell=True)
-
-        # Delete old datasets.
-        for key in keys:
-            del self.datasets[key]
-
-        # Add the new one.
-        self.datasets[(merged_name, lang)] = merged_dataset
-
-
-def check_exists(path):
-    if path.exists():
-        logging.info(f'{path} already exists.')
-        return True
-    return False
-
+Key = namedtuple('Key', ['main', 'lang'])
 
 if __name__ == "__main__":
     initiate(logger=True, gpus=True)
@@ -152,159 +60,103 @@ if __name__ == "__main__":
     add_argument('langs', dtype=str, nargs=2)
     add_argument('codes', dtype=str)
     add_argument('seed', dtype=int, default=1234)
+    add_argument('split_lines', dtype=int, nargs=2)
     add_argument('eat', dtype=bool, default=False)
     parse_args()
 
     # Use random seed to make sure train split is persistent.
     random.seed(g.seed)
 
-    # ---------------------------- Initialize datasets ---------------------------- #
+    # Set constant for the actions.
+    set_action_constant('MOSES_DIR', MOSES_DIR)
+    set_action_constant('FASTBPE', FASTBPE)
+    set_action_constant('MAIN_DIR', MAIN_DIR)
+    set_action_constant('NUM_THREADS', NUM_THREADS)
+    if g.eat:
+        set_action_constant('EAT_DIR', EAT_DIR)
 
-    # Use this automatically compute some paths.
-    lang1, lang2 = g.langs
-    if lang1 > lang2:
-        lang1, lang2 = lang2, lang1
+    # Get the language pair.
+    lang1, lang2 = sorted(g.langs)
     pair = f'{lang1}-{lang2}'
-    datasets = Datasets(pair)
 
-    # mkdir everything.
+    # Get the folders.
     out_dir = DATA_DIR / f'{pair}'
-    (out_dir / 'raw').mkdir(exist_ok=True, parents=True)
-    (out_dir / 'processed').mkdir(exist_ok=True, parents=True)
+    raw_dir = out_dir / 'raw'
+    processed_dir = out_dir / 'processed'
 
-    # --------------------------- Download files first. -------------------------- #
+    # ---------------------------------------------------------------------------- #
+    #                                   Main body                                  #
+    # ---------------------------------------------------------------------------- #
 
     # For test set, we need to figure out what to download.
     test_to_download = [f'test_{dataset.value}' for dataset in test_sets[lang1] & test_sets[lang2]]
 
-    # Get all paths and urls.
+    # Get all urls.
+    urls = dict()
     for lang in g.langs:
-        # Training set.
-        datasets.add(
-            lang,
-            'train',
-            f'{MULTI30K_DOMAIN_URL}/train.{lang}.gz?raw=true',
-        )
-        # Dev set.
-        datasets.add(
-            lang,
-            'valid',
-            f'{MULTI30K_DOMAIN_URL}/val.{lang}.gz?raw=true'
-        )
-        # Test set.
-        for dataset in test_to_download:
-            datasets.add(
-                lang,
-                dataset,
-                f'{MULTI30K_DOMAIN_URL}/{dataset}.{lang}.gz?raw=true'
-            )
+        urls[Key('train', lang)] = f'{MULTI30K_DOMAIN_URL}/train.{lang}.gz?raw=true'
+        urls[Key('dev', lang)] = f'{MULTI30K_DOMAIN_URL}/val.{lang}.gz?raw=true'
+        for name in test_to_download:
+            urls[Key(name, lang)] = f'{MULTI30K_DOMAIN_URL}/{name}.{lang}.gz?raw=true'
 
-    # Now try to download everything.
-    for dataset in datasets:
-        if not check_exists(dataset.gz_path):
-            subprocess.call(f'wget {dataset.url} -O {dataset.gz_path}', shell=True)
+    # Download everything.
+    pipeline = Pipeline(urls)
+    pipeline.download(folder=raw_dir, pair=pair, ext='gz')
 
     # Merge all test sets.
     for lang in g.langs:
-        datasets.merge(test_to_download, lang, 'test')
+        merge_to = FormatFile(raw_dir, 'test', lang, 'gz', pair=pair)
+        merge_to_key = Key('test', lang)
+        to_merge_keys = [Key(name, lang) for name in test_to_download]
+        pipeline.merge(to_merge_keys, merge_to_key, merge_to)
 
-    # --------------------------- Decompress everything -------------------------- #
+    # Decompress everything.
+    pipeline.decompress()
 
-    for dataset in datasets:
-        if not check_exists(dataset.raw_path):
-            subprocess.call(f'gunzip -k {dataset.gz_path}', shell=True)
-            logging.imp(f'Decompressed file saved in {dataset.raw_path}.')
-
-    # -------------------------------- Preprocess -------------------------------- #
-
-    for dataset in datasets:
-        if not check_exists(dataset.plain_path):
-            subprocess.call(
-                f"cat {dataset.raw_path} | {REPLACE_UNICODE_PUNCT} | {NORM_PUNC} -l {dataset.lang} | {REM_NON_PRINT_CHAR} |{TOKENIZER} -l {dataset.lang} -no-escape -threads {NUM_THREADS} > {dataset.plain_path}", shell=True)
-            logging.imp(f'Tokenized file saved in {dataset.plain_path}.')
-
-    # ------------------------------ Apply BPE codes ----------------------------- #
-
-    # First figure out how to deal with '<EMPTY>'.
-    empty_out = subprocess.check_output(
-        f'{FASTBPE} applybpe_stream {g.codes} < <(echo "<EMPTY>")', shell=True, executable='/bin/bash')  # NOTE Have to use bash for this since process substitution is a bash-only feature.
-    empty_out = empty_out.decode('utf8').strip()
-
-    # Now apply BPE to everything.
-    for dataset in datasets:
-        if not check_exists(dataset.bpe_path):
-            subprocess.call(f'{FASTBPE} applybpe {dataset.bpe_path} {dataset.plain_path} {g.codes}', shell=True)
-            subprocess.call(f"sed -i 's/{empty_out}/<EMPTY>/g' {dataset.bpe_path}", shell=True)
-            logging.imp(f'BPE-segmented file saved in {dataset.bpe_path}.')
-
-    # ---------------------------- Extract vocabulary ---------------------------- #
-
-    # For train sets, we need to take a nonoverlapping subset for lang1 and lang2.
-    train1 = datasets[('train', lang1)]
-    train2 = datasets[('train', lang2)]
-    new_bpe_path1 = DATA_DIR / pair / 'processed' / f'{train1.name}.{lang1}'
-    new_bpe_path2 = DATA_DIR / pair / 'processed' / f'{train2.name}.{lang2}'
-    len1 = int(subprocess.check_output(f'cat {train1.bpe_path} | wc -l', shell=True))
-    len2 = int(subprocess.check_output(f'cat {train2.bpe_path} | wc -l', shell=True))
-    if len1 != len2:
-        raise RuntimeError(f'{len1} should be equal to {len2}.')
-    indices = list(range(len1))
+    # Take two non-overlapping subsets from training.
+    num_lines = sum(g.split_lines)
+    indices = list(range(num_lines))
     random.shuffle(indices)
-    indices1 = indices[:len1 // 2]
-    indices2 = indices[len1 // 2:]
-    train1.take_subset(indices1, new_bpe_path1)
-    train2.take_subset(indices2, new_bpe_path2)
+    indices1 = indices[:g.split_lines[0]]
+    indices2 = indices[g.split_lines[0]:num_lines]
+    line_ids = [indices1, indices2]
+    key1 = Key('train', lang1)
+    key2 = Key('train', lang2)
+    pipeline.split(key1, line_ids, 0)
+    pipeline.split(key2, line_ids, 1)
 
-    # Extract source and target vocabularies.
-    train_paths = dict()
-    for dataset in [train1, train2]:
-        vocab_path = dataset.bpe_path.parent / f'vocab.{dataset.lang}'
-        train_paths[dataset.lang] = dataset.bpe_path
-        if not check_exists(vocab_path):
-            subprocess.call(f'{FASTBPE} getvocab {dataset.bpe_path} > {vocab_path}', shell=True)
-            logging.imp(f'Training vocab for {dataset.lang} saved in {vocab_path}.')
+    # Now training sets are not parallel.
+    link1 = pipeline.sources[key1].remove_pair().remove_part()
+    link2 = pipeline.sources[key2].remove_pair().remove_part()
+    pipeline.link(key1, link1)
+    pipeline.link(key2, link2)
+
+    # Preprocess.
+    pipeline.preprocess()
+
+    # For eat, we need to get the eat files first.
+    if g.eat:
+        eat_dir = out_dir / 'processed-eat'
+        pipeline.parse(folder=eat_dir)
+        pipeline.collapse()
+        pipeline.convert_eat()
+        # After conversion, some texts are missing due to empty EAT sequence.
+        for split in ['dev', 'test']:
+            pipeline.align(Key(split, lang1), Key(split, lang2))
+
+    # Apply BPE.
+    folder = eat_dir if g.eat else processed_dir
+    pipeline.apply_bpe(codes=g.codes, folder=folder)
 
     # Extract full vocab.
-    full_vocab_path = out_dir / 'processed' / f'vocab.{pair}'
-    if not check_exists(full_vocab_path):
-        subprocess.call(f'{FASTBPE} getvocab {train_paths[lang1]} {train_paths[lang2]} > {full_vocab_path}', shell=True)
-        logging.imp(f'Full vocab saved in {full_vocab_path}.')
+    pipeline.extract_joint_vocab(Key('train', lang1), Key('train', lang2))
 
-    # ------------------------------- Binarize data ------------------------------ #
+    # Binarize everything.
+    pipeline.binarize()
 
-    for dataset in datasets:
-        if not check_exists(dataset.bin_path):
-            subprocess.call(f'{MAIN_DIR}/preprocess.py {full_vocab_path} {dataset.bpe_path}', shell=True)
-            logging.imp(f'Binarized data saved in {dataset.bin_path}.')
-
-    # -------- Link monolingual validation and test data to parallel data -------- #
-
-    for dataset in datasets:
-        if dataset.name != 'train':
-            link_path = DATA_DIR / pair / 'processed' / f'{dataset.name}.{dataset.lang}.pth'
-            if not check_exists(link_path):
-                link_path.symlink_to(dataset.bin_path)
-                logging.imp(f'Binarized data linked in {link_path}')
-
-    # ------------------- Convert plain texts to EAT sequences ------------------- #
-
-    if g.eat:
-        datasets_by_lang = datasets.groupby('lang')
-        pipelines = dict()
+    # Link monolingual validation and test data to parallel data.
+    for split in ['dev', 'test']:
         for lang in g.langs:
-            for dataset in datasets_by_lang[lang]:
-                if not check_exists(dataset.eat_path):
-                    logging.info(f'Start parsing data in {dataset.plain_path}.')
-                    if lang not in pipelines:
-                        nlp = stanfordnlp.Pipeline(verbose=True, lang=dataset.lang, tokenize_pretokenized=True,
-                                                   use_gpu=True)  # This sets up a default neural pipeline.
-                        pipelines[lang] = nlp
-                    else:
-                        nlp = pipelines[lang]
-                    inputs = list()
-                    with Path(dataset.plain_path).open('r', encoding='utf8') as fin:
-                        for line in fin:
-                            inputs.append(line.strip().split())
-                    doc = nlp(inputs)
-                    doc.write_conll_to_file(dataset.eat_path)
-                    logging.imp(f'Parsed data stored in {dataset.eat_path}.')
+            src_key = Key(split, lang)
+            link = pipeline.sources[src_key].remove_pair()
+            pipeline.link(src_key, link)
