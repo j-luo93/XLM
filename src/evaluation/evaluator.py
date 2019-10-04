@@ -5,16 +5,18 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-from logging import getLogger
 import os
 import subprocess
 from collections import OrderedDict
+from logging import getLogger
+
 import numpy as np
 import torch
 
-from ..utils import to_cuda, restore_segmentation, concat_batches
-from ..model.memory import HashingMemory
+from arglib import add_argument
 
+from ..model.memory import HashingMemory
+from ..utils import concat_batches, restore_segmentation, to_cuda
 
 BLEU_SCRIPT_PATH = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'multi-bleu.perl')
 assert os.path.isfile(BLEU_SCRIPT_PATH)
@@ -82,6 +84,8 @@ def eval_memory_usage(scores, name, mem_att, mem_size):
 
 
 class Evaluator(object):
+
+    add_argument('eval_mt_steps', dtype=str, default='')
 
     def __init__(self, trainer, data, params):
         """
@@ -237,7 +241,7 @@ class Evaluator(object):
                     self.evaluate_mlm(scores, data_set, lang1, lang2)
 
                 # machine translation task (evaluate perplexity and accuracy)
-                for lang1, lang2 in set(params.mt_steps + [(l2, l3) for _, l2, l3 in params.bt_steps]):
+                for lang1, lang2 in set(params.mt_steps + [(l2, l3) for _, l2, l3 in params.bt_steps] + params.eval_mt_steps):
                     eval_bleu = params.eval_bleu and params.is_master
                     self.evaluate_mt(scores, data_set, lang1, lang2, eval_bleu)
 

@@ -110,6 +110,7 @@ def set_pretrain_emb(model, dico, word2id, embeddings):
 
 add_argument('old_data_paths', nargs=2, dtype=str,
              msg='paths (first src, second tgt) to the old data to extract the vocabularies.')
+add_argument('hack_reload', dtype=bool, default=False)
 
 
 def build_model(params, dico):
@@ -184,14 +185,20 @@ def build_model(params, dico):
                 assert len(new) == len(new.word2id) == len(new.id2word) == len(new_w)
                 idx = list()
                 for new_i, w in new.id2word.items():
-                    old_i = old.word2id[w]
+                    if w == '<EMPTY>':
+                        old_i = old.unk_index
+                    else:
+                        old_i = old.word2id[w]
                     idx.append(old_i)
                 old_state[name] = old_w[idx]
 
             # reload encoder
             if enc_path != '':
                 logger.info("Reloading encoder from %s ..." % enc_path)
-                enc_reload = torch.load(enc_path, map_location=lambda storage, loc: storage.cuda(params.local_rank))
+                if g.hack_reload:
+                    enc_reload = torch.load(enc_path)
+                else:
+                    enc_reload = torch.load(enc_path, map_location=lambda storage, loc: storage.cuda(params.local_rank))
                 enc_reload = enc_reload['model' if 'model' in enc_reload else 'encoder']
                 if all([k.startswith('module.') for k in enc_reload.keys()]):
                     enc_reload = {k[len('module.'):]: v for k, v in enc_reload.items()}
@@ -203,7 +210,10 @@ def build_model(params, dico):
             # reload decoder
             if dec_path != '':
                 logger.info("Reloading decoder from %s ..." % dec_path)
-                dec_reload = torch.load(dec_path, map_location=lambda storage, loc: storage.cuda(params.local_rank))
+                if g.hack_reload:
+                    dec_reload = torch.load(dec_path)
+                else:
+                    dec_reload = torch.load(dec_path, map_location=lambda storage, loc: storage.cuda(params.local_rank))
                 dec_reload = dec_reload['model' if 'model' in dec_reload else 'decoder']
                 if all([k.startswith('module.') for k in dec_reload.keys()]):
                     dec_reload = {k[len('module.'):]: v for k, v in dec_reload.items()}

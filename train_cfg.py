@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Tuple
 
 from arglib import Registry
 
@@ -66,6 +67,9 @@ class DeEnBase(SingleGpuParams):
 @reg
 class DeEnMulti30KBaseline(DeEnBase):
 
+    eval_interval: int = 100
+    old_data_paths: Tuple[str] = ('data/processed/de-en/valid.de.pth', 'data/processed/de-en/valid.en.pth')
+
     def __post_init__(self):
         super().__post_init__()
         cls = type(self)
@@ -73,3 +77,27 @@ class DeEnMulti30KBaseline(DeEnBase):
         tgt = cls.TGT_LANG
         self.data_path = f'./data/multi30k/{src}-{tgt}/processed'
         self.exp_name = f'unsupMT_multi30K_{src}{tgt}'
+
+
+@reg
+class DeEnMulti30KBaselineNoBt(DeEnMulti30KBaseline):
+
+    def __post_init__(self):
+        super().__post_init__()
+        cls = type(self)
+        src = cls.SRC_LANG
+        tgt = cls.TGT_LANG
+        self.bt_steps = ''
+        self.eval_mt_steps = f'{src}-{tgt},{tgt}-{src}'
+
+
+@reg
+class DeEnMulti30KEatNoBt(DeEnMulti30KBaselineNoBt):
+
+    def __post_init__(self):
+        super().__post_init__()
+        cls = type(self)
+        src = cls.SRC_LANG
+        tgt = cls.TGT_LANG
+        self.data_path = f"./data/multi30k/{src}-{tgt}/processed-eat"
+        self.exp_name = f"unsupMT_EAT_{src}{tgt}"

@@ -154,9 +154,14 @@ if __name__ == "__main__":
     # Binarize everything.
     pipeline.binarize()
 
-    # Link monolingual validation and test data to parallel data.
-    for split in ['dev', 'test']:
+    # Follow XLM's naming tradition and link to proper files.
+    for split in ['train', 'dev', 'test']:
         for lang in g.langs:
             src_key = Key(split, lang)
-            link = pipeline.sources[src_key].remove_pair()
-            pipeline.link(src_key, link)
+            main = 'valid' if split == 'dev' else split
+            mono_link = FormatFile(folder, main, lang, 'pth')
+            pipeline.link(src_key, mono_link)
+
+            if split != 'train':
+                para_link = FormatFile(folder, main, lang, 'pth', pair=pair)
+                pipeline.link(src_key, para_link)
