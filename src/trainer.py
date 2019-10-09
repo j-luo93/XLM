@@ -35,7 +35,7 @@ logger = getLogger()
 class Trainer:
 
     add_argument('freeze_emb', dtype=bool, default=False, msg='Freeze embeddings.')
-
+    add_argument('ae_add_noise', dtype=bool, default=True, msg='add noise to ae')
     add_argument('ep_add_noise', default=False, dtype=bool)
 
     def __init__(self, data, params, use_graph: 'p'):
@@ -150,6 +150,9 @@ class Trainer:
         # Get a verifier if use_graph.
         if params.use_graph:
             self.verifier = Verifier()
+
+        # Whether to add noise to AE.
+        self.ae_add_noise = params.ae_add_noise
 
     def set_parameters(self):
         """
@@ -456,9 +459,10 @@ class Trainer:
         """
         Add noise to the encoder input.
         """
-        words, lengths = self.word_shuffle(words, lengths)
-        words, lengths = self.word_dropout(words, lengths)
-        words, lengths = self.word_blank(words, lengths)
+        if self.ae_add_noise:
+            words, lengths = self.word_shuffle(words, lengths)
+            words, lengths = self.word_dropout(words, lengths)
+            words, lengths = self.word_blank(words, lengths)
         return words, lengths
 
     def mask_out(self, x, lengths):

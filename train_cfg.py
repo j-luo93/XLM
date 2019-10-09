@@ -100,4 +100,4 @@ class DeEnMulti30KEatNoBt(DeEnMulti30KBaselineNoBt):
         src = cls.SRC_LANG
         tgt = cls.TGT_LANG
         self.data_path = f"./data/multi30k/{src}-{tgt}/processed-eat"
-        self.exp_name = f"unsupMT_EAT_{src}{tgt}"
+        self.exp_name = f"unsupMT_multi30K_EAT_{src}{tgt}"
