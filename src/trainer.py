@@ -18,17 +18,15 @@ from torch import nn
 from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
 
-from arglib import add_argument
+from arglib import add_argument, init_g_attr
 from trainlib import Tracker, log_this
 
+from .data.verifier import Verifier
 from .model.memory import HashingMemory
 from .model.transformer import TransformerFFN
 from .optim import get_optimizer
 from .utils import (concat_batches, find_modules, parse_lambda_config, to_cuda,
                     update_lambdas)
-
-from arglib import add_argument, init_g_attr
-from .data.verifier import Verifier
 
 logger = getLogger()
 
@@ -341,7 +339,7 @@ class Trainer:
         self.iterators[(iter_name, lang1, lang2)] = iterator
         return iterator
 
-    def get_batch(self, iter_name, lang1, lang2=None, stream=False, input_format='plain', graph_input=False):
+    def get_batch(self, iter_name, lang1, lang2=None, stream=False, input_format='plain'):
         """
         Return a batch of sentences from a dataset.
         """
@@ -365,11 +363,7 @@ class Trainer:
                 unpacked = data[sl // 9, 9, bs]
                 data = unpacked[:, :3].view(-1, bs)
                 lengths = lengths // 3
-            if graph_input:
-                graph_info = self.verifier(data)
-                return data, lengths, graph_info
-            else:
-                return data, lengths, None
+            return data, lengths
         else:
             return x[::-1]  # NOTE Not sure why this is reversed but I'm keeping it as it is.
 
@@ -914,7 +908,7 @@ class EncDecTrainer(Trainer):
         # generate batch
         if lang1 == lang2:
             input_format = 'eat' if ep else 'plain'
-            (x1, len1, graph_info) = self.get_batch('ae', lang1, input_format=input_format, graph_input=self.use_graph)
+            (x1, len1) = self.get_batch('ae', lang1, input_format=input_format)
             (x2, len2) = (x1, len1)
             if not ep or params.ep_add_noise:
                 (x1, len1) = self.add_noise(x1, len1)
@@ -932,12 +926,24 @@ class EncDecTrainer(Trainer):
         # cuda
         x1, len1, langs1, x2, len2, langs2, y = to_cuda(x1, len1, langs1, x2, len2, langs2, y)
 
+        # Compute graph_info if needed
+        graph_info = None
+        if self.use_graph:
+            if lang1 != lang2:
+                raise RuntimeError('use_graph not activated for BT')
+            else:
+                graph_info = self.verifier(x1)
+
         # encode source sentence
         kwargs = {'x': x1, 'lengths': len1, 'langs': langs1, 'causal': False}
         if graph_info is not None:
             kwargs['graph_info'] = graph_info
         enc1 = self.encoder('fwd', **kwargs)
         enc1 = enc1.transpose(0, 1)
+
+        # Modify src_len if use_graph. It has been changed to represent words instead of BPEs.
+        if graph_info is not None:
+            len1 = graph_info.word_lengths
 
         # decode target sentence
         dec2 = self.decoder('fwd', x=x2, lengths=len2, langs=langs2, causal=True, src_enc=enc1, src_len=len1)

@@ -17,6 +17,7 @@ Tensor = torch.Tensor
 class GraphInfo:
     bpe_mask: Tensor
     word_mask: Tensor
+    word_lengths: Tensor
     word2bpe: Tensor
 
 
@@ -56,9 +57,9 @@ class Verifier(nn.Module):
         bpe_mask = (word_ids.unsqueeze(dim=1) == word_ids.unsqueeze(dim=2))
 
         # word_mask
-        lengths, _ = word_ids.max(dim=1)
-        max_len = max(lengths)
-        word_mask = get_length_mask(lengths, max_len)  # size: bs x wl
+        word_lengths, _ = word_ids.max(dim=1)
+        max_len = max(word_lengths)
+        word_mask = get_length_mask(word_lengths, max_len)  # size: bs x wl
 
         # word2bpe is computed by getting all the row and column indices correctly.
         word_idx = (word_ids - 1)  # size: bs x l
@@ -67,4 +68,4 @@ class Verifier(nn.Module):
         word2bpe = get_zeros(bs, max_len, l)
         word2bpe[batch_i, word_idx, bpe_idx] = 1.0
 
-        return GraphInfo(bpe_mask, word_mask, word2bpe)
+        return GraphInfo(bpe_mask, word_mask, word_lengths, word2bpe)

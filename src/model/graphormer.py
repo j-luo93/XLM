@@ -118,11 +118,12 @@ class Graphormer(TransformerModel):
         h = h.transpose(0, 1)
         assembled_h = self.assembler(h, graph_info.bpe_mask, graph_info.word2bpe)
         norms, type_probs = self.graph_predictor(assembled_h, graph_info.word_mask)
-        breakpoint()  # DEBUG(j_luo)
         # Prepare node_features, edge_index, edge_norms and edge_types.
         node_features, edge_index, edge_norm, edge_type = self._prepare_for_geometry(assembled_h, norms, type_probs)
-        # FIXME(j_luo)
         graph_h = self.rgcn(x=node_features, edge_index=edge_index, edge_norm=edge_norm, edge_type=edge_type)
+        # Now reshape graph_h for later usage. Note that the length dimension has changed to represent words instead of BPEs.
+        bs, wl, _ = assembled_h.shape
+        graph_h = graph_h.view(bs, wl, -1).transpose(0, 1)
         return graph_h
 
     def _prepare_for_geometry(self, assembled_h, norms, type_probs):
