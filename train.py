@@ -67,6 +67,8 @@ def add_main_arguments():
                  msg="Use sinusoidal embeddings")
     add_argument("use_lang_emb", dtype=bool, default=True,
                  msg="Use language embedding")
+    add_argument("use_graph", dtype=bool, default=False,
+                 msg="Use a graph formulation on top of transformer encoder")
 
     # adaptive softmax
     add_argument("asm", dtype=bool, default=False,
@@ -276,7 +278,8 @@ def main(params):
             for lang in shuf_order(params.ae_steps):
                 trainer.denoise_mt_step(lang, lang, params.lambda_ae)
 
-            # eat-plain steps, with optinal added noise
+            # eat-plain steps, with optional added noise
+            # NOTE(j_luo) This is not used.
             for lang in shuf_order(params.ep_steps):
                 trainer.ep_step(lang, params.lambda_ep)
 

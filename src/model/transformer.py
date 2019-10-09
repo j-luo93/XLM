@@ -105,6 +105,7 @@ class PredLayer(nn.Module):
     """
     Prediction layer (cross_entropy or adaptive_softmax).
     """
+
     def __init__(self, params):
         super().__init__()
         self.asm = params.asm
@@ -163,7 +164,7 @@ class MultiHeadAttention(nn.Module):
         self.v_lin = Linear(dim, dim)
         self.out_lin = Linear(dim, dim)
 
-    def forward(self, input, mask, kv=None, cache=None):
+    def forward(self, input, mask, kv=None, cache=None, return_weights=False):
         """
         Self-attention (if kv is None) or attention over source sentence (provided by kv).
         """
@@ -212,11 +213,14 @@ class MultiHeadAttention(nn.Module):
         scores.masked_fill_(mask, -float('inf'))                              # (bs, n_heads, qlen, klen)
 
         weights = F.softmax(scores.float(), dim=-1).type_as(scores)           # (bs, n_heads, qlen, klen)
-        weights = F.dropout(weights, p=self.dropout, training=self.training)  # (bs, n_heads, qlen, klen)
-        context = torch.matmul(weights, v)                                    # (bs, n_heads, qlen, dim_per_head)
+        dropped_weights = F.dropout(weights, p=self.dropout, training=self.training)  # (bs, n_heads, qlen, klen)
+        context = torch.matmul(dropped_weights, v)                            # (bs, n_heads, qlen, dim_per_head)
         context = unshape(context)                                            # (bs, qlen, dim)
-
-        return self.out_lin(context)
+        output = self.out_lin(context)
+        if return_weights:
+            return output, weights
+        else:
+            return output
 
 
 class TransformerFFN(nn.Module):
@@ -238,7 +242,8 @@ class TransformerFFN(nn.Module):
 
 class TransformerModel(nn.Module):
 
-    ATTRIBUTES = ['encoder', 'with_output', 'eos_index', 'pad_index', 'n_langs', 'n_words', 'dim', 'n_layers', 'n_heads', 'hidden_dim', 'dropout', 'attention_dropout', 'asm', 'asm_cutoffs', 'asm_div_value']
+    ATTRIBUTES = ['encoder', 'with_output', 'eos_index', 'pad_index', 'n_langs', 'n_words', 'dim', 'n_layers',
+                  'n_heads', 'hidden_dim', 'dropout', 'attention_dropout', 'asm', 'asm_cutoffs', 'asm_div_value']
 
     def __init__(self, params, dico, is_encoder, with_output):
         """
@@ -308,7 +313,8 @@ class TransformerModel(nn.Module):
             if ('%i_in' % layer_id) in self.memories:
                 self.ffns.append(None)
             else:
-                self.ffns.append(TransformerFFN(self.dim, self.hidden_dim, self.dim, dropout=self.dropout, gelu_activation=params.gelu_activation))
+                self.ffns.append(TransformerFFN(self.dim, self.hidden_dim, self.dim,
+                                                dropout=self.dropout, gelu_activation=params.gelu_activation))
             self.layer_norm2.append(nn.LayerNorm(self.dim, eps=1e-12))
 
         # output layer
@@ -553,7 +559,8 @@ class TransformerModel(nn.Module):
         n_words = self.n_words
 
         # expand to beam size the source latent representations / source lengths
-        src_enc = src_enc.unsqueeze(1).expand((bs, beam_size) + src_enc.shape[1:]).contiguous().view((bs * beam_size,) + src_enc.shape[1:])
+        src_enc = src_enc.unsqueeze(1).expand(
+            (bs, beam_size) + src_enc.shape[1:]).contiguous().view((bs * beam_size,) + src_enc.shape[1:])
         src_len = src_len.unsqueeze(1).expand(bs, beam_size).contiguous().view(-1)
 
         # generated sentences (batch with beam current hypotheses)
@@ -637,7 +644,8 @@ class TransformerModel(nn.Module):
 
                     # end of sentence, or next word
                     if word_id == self.eos_index or cur_len + 1 == max_len:
-                        generated_hyps[sent_id].add(generated[:cur_len, sent_id * beam_size + beam_id].clone(), value.item())
+                        generated_hyps[sent_id].add(
+                            generated[:cur_len, sent_id * beam_size + beam_id].clone(), value.item())
                     else:
                         next_sent_beam.append((value, word_id, sent_id * beam_size + beam_id))
 

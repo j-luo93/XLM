@@ -27,18 +27,20 @@ from .optim import get_optimizer
 from .utils import (concat_batches, find_modules, parse_lambda_config, to_cuda,
                     update_lambdas)
 
-from arglib import add_argument
+from arglib import add_argument, init_g_attr
+from .data.verifier import Verifier
 
 logger = getLogger()
 
 
+@init_g_attr(default="none")
 class Trainer:
 
     add_argument('freeze_emb', dtype=bool, default=False, msg='Freeze embeddings.')
 
     add_argument('ep_add_noise', default=False, dtype=bool)
 
-    def __init__(self, data, params):
+    def __init__(self, data, params, use_graph: 'p'):
         """
         Initialize trainer.
         """
@@ -146,6 +148,10 @@ class Trainer:
 
         # initialize lambda coefficients and their configurations
         parse_lambda_config(params)
+
+        # Get a verifier if use_graph.
+        if params.use_graph:
+            self.verifier = Verifier()
 
     def set_parameters(self):
         """
@@ -335,7 +341,7 @@ class Trainer:
         self.iterators[(iter_name, lang1, lang2)] = iterator
         return iterator
 
-    def get_batch(self, iter_name, lang1, lang2=None, stream=False, input_format='plain'):
+    def get_batch(self, iter_name, lang1, lang2=None, stream=False, input_format='plain', graph_input=False):
         """
         Return a batch of sentences from a dataset.
         """
@@ -357,11 +363,15 @@ class Trainer:
                 sl, bs = data.shape
                 assert sl % 9 == 0
                 unpacked = data[sl // 9, 9, bs]
-                data = unpacked[:, :3 ].view(-1, bs)
+                data = unpacked[:, :3].view(-1, bs)
                 lengths = lengths // 3
-            return data, lengths
+            if graph_input:
+                graph_info = self.verifier(data)
+                return data, lengths, graph_info
+            else:
+                return data, lengths, None
         else:
-            return x[::-1] # NOTE Not sure this is reversed but I'm keeping it as it is.
+            return x[::-1]  # NOTE Not sure why this is reversed but I'm keeping it as it is.
 
     def word_shuffle(self, x, l):
         """
@@ -696,12 +706,16 @@ class Trainer:
         assert x.size(1) % 8 == 0
         return x, lengths, positions, langs, idx
 
+    def _check_use_graph(self, mode):
+        assert not self.use_graph, f'Mode {mode} not supported with graph right now.'
+
     @log_this(arg_list=['lang1', 'lang2'])
     def clm_step(self, lang1, lang2, lambda_coeff):
         """
         Next word prediction step (causal prediction).
         CLM objective.
         """
+        self._check_use_graph('clm')
         assert lambda_coeff >= 0
         if lambda_coeff == 0:
             return
@@ -743,6 +757,7 @@ class Trainer:
         Masked word prediction step.
         MLM objective is lang2 is None, TLM objective otherwise.
         """
+        self._check_use_graph('mlm')
         assert lambda_coeff >= 0
         if lambda_coeff == 0:
             return
@@ -778,6 +793,7 @@ class Trainer:
         """
         Parallel classification step. Predict if pairs of sentences are mutual translations of each other.
         """
+        self._check_use_graph('pc')
         assert lambda_coeff >= 0
         if lambda_coeff == 0:
             return
@@ -826,7 +842,7 @@ class Trainer:
         self.optimize(loss)
 
         # number of processed sentences / words
-        self.tracker.update('n_sentences',params.batch_size)
+        self.tracker.update('n_sentences', params.batch_size)
         self.stats['processed_s'] += bs
         self.stats['processed_w'] += lengths.sum().item()
 
@@ -868,6 +884,7 @@ class EncDecTrainer(Trainer):
 
     @log_this(arg_list=['lang1', 'lang2'])
     def mt_step(self, lang1, lang2, lambda_coeff):
+        self._check_use_graph('mt')
         if lang1 == lang2:
             raise ValueError(
                 'mt_step should be called for different languages, but got "{lang1}" and "{lang2}". Did you mean to use denoise_mt_step?')
@@ -875,6 +892,7 @@ class EncDecTrainer(Trainer):
 
     @log_this(arg_list=['lang'])
     def ep_step(self, lang, lambda_coeff):
+        self._check_use_graph('ep')
         return self._mt_step(lang, lang, lambda_coeff, ep=True)
 
     def _mt_step(self, lang1, lang2, lambda_coeff, ep=False):
@@ -896,7 +914,7 @@ class EncDecTrainer(Trainer):
         # generate batch
         if lang1 == lang2:
             input_format = 'eat' if ep else 'plain'
-            (x1, len1) = self.get_batch('ae', lang1, input_format=input_format)
+            (x1, len1, graph_info) = self.get_batch('ae', lang1, input_format=input_format, graph_input=self.use_graph)
             (x2, len2) = (x1, len1)
             if not ep or params.ep_add_noise:
                 (x1, len1) = self.add_noise(x1, len1)
@@ -915,7 +933,10 @@ class EncDecTrainer(Trainer):
         x1, len1, langs1, x2, len2, langs2, y = to_cuda(x1, len1, langs1, x2, len2, langs2, y)
 
         # encode source sentence
-        enc1 = self.encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
+        kwargs = {'x': x1, 'lengths': len1, 'langs': langs1, 'causal': False}
+        if graph_info is not None:
+            kwargs['graph_info'] = graph_info
+        enc1 = self.encoder('fwd', **kwargs)
         enc1 = enc1.transpose(0, 1)
 
         # decode target sentence
@@ -951,7 +972,7 @@ class EncDecTrainer(Trainer):
         lang2_id = params.lang2id[lang2]
 
         # generate source batch
-        x1, len1 = self.get_batch('bt', lang1)
+        x1, len1, graph_info = self.get_batch('bt', lang1, graph_input=self.use_graph)
         langs1 = x1.clone().fill_(lang1_id)
 
         # cuda
@@ -965,7 +986,7 @@ class EncDecTrainer(Trainer):
             self.decoder.eval()
 
             # encode source sentence and translate it
-            enc1 = _encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False)
+            enc1 = _encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False, graph_info=graph_info)
             enc1 = enc1.transpose(0, 1)
             x2, len2 = _decoder.generate(enc1, len1, lang2_id, max_len=int(1.3 * len1.max().item() + 5))
             langs2 = x2.clone().fill_(lang2_id)
@@ -977,8 +998,11 @@ class EncDecTrainer(Trainer):
             self.encoder.train()
             self.decoder.train()
 
+        # FIXME(j_luo) write this
+        graph_info = self._get_graph_info_from_generation(x2, len2, graph_input=self.use_graph)
+
         # encode generate sentence
-        enc2 = self.encoder('fwd', x=x2, lengths=len2, langs=langs2, causal=False)
+        enc2 = self.encoder('fwd', x=x2, lengths=len2, langs=langs2, causal=False, graph_info=graph_info)
         enc2 = enc2.transpose(0, 1)
 
         # words to predict

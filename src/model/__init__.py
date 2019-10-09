@@ -12,10 +12,10 @@ import torch
 
 from arglib import add_argument, g
 
+from .graphormer import Graphormer
 from .memory import HashingMemory
 from .pretrain import load_embeddings
-from .transformer import (DECODER_ONLY_PARAMS,  # , TRANSFORMER_LAYER_PARAMS
-                          TransformerModel)
+from .transformer import DECODER_ONLY_PARAMS, TransformerModel
 
 logger = getLogger()
 
@@ -156,7 +156,8 @@ def build_model(params, dico):
         # build
         # TODO: only output when necessary - len(params.clm_steps + params.mlm_steps) > 0
         # NOTE(j_luo) set with_output to False, see https://github.com/facebookresearch/XLM/issues/109
-        encoder = TransformerModel(params, dico, is_encoder=True, with_output=False)
+        encoder_cls = Graphormer if params.use_graph else TransformerModel
+        encoder = encoder_cls(params, dico, is_encoder=True, with_output=False)
         decoder = TransformerModel(params, dico, is_encoder=False, with_output=True)
 
         # reload pretrained word embeddings
