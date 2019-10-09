@@ -45,7 +45,7 @@ class Verifier(nn.Module):
         word_mask is the mask that marks whether or not a position is padded.
         word2bpe is the matrix that maps from word ids to bpe positions.
         """
-        data = get_tensor(data.t())  # NOTE(j_luo) Move to GPU if necessary. And remember to transpose it.
+        data = data.t()
         bs, l = data.shape
 
         data_off_by_one = torch.cat([get_zeros(bs, 1).long(), data[:, :-1]], dim=1)
