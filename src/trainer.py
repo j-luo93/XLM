@@ -314,7 +314,7 @@ class Trainer:
         # log speed + stats + learning rate
         logger.info(s_iter + s_speed + s_stat + s_lr)
 
-    def get_iterator(self, iter_name, lang1, lang2, stream):
+    def get_iterator(self, iter_name, lang1, lang2, stream, return_indices=False):
         """
         Create a new iterator for a dataset.
         """
@@ -323,12 +323,14 @@ class Trainer:
         assert stream or not self.params.use_memory or not self.params.mem_query_batchnorm
         if lang2 is None:
             if stream:
-                iterator = self.data['mono_stream'][lang1]['train'].get_iterator(shuffle=True)
+                iterator = self.data['mono_stream'][lang1]['train'].get_iterator(
+                    shuffle=True, return_indices=return_indices)
             else:
                 iterator = self.data['mono'][lang1]['train'].get_iterator(
                     shuffle=True,
                     group_by_size=self.params.group_by_size,
                     n_sentences=-1,
+                    return_indices=return_indices
                 )
         else:
             assert stream is False
@@ -337,12 +339,13 @@ class Trainer:
                 shuffle=True,
                 group_by_size=self.params.group_by_size,
                 n_sentences=-1,
+                return_indices=return_indices
             )
 
         self.iterators[(iter_name, lang1, lang2)] = iterator
         return iterator
 
-    def get_batch(self, iter_name, lang1, lang2=None, stream=False, input_format='plain'):
+    def get_batch(self, iter_name, lang1, lang2=None, stream=False, input_format='plain', return_indices=False):
         """
         Return a batch of sentences from a dataset.
         """
@@ -351,14 +354,17 @@ class Trainer:
         assert stream is False or lang2 is None
         iterator = self.iterators.get((iter_name, lang1, lang2), None)
         if iterator is None:
-            iterator = self.get_iterator(iter_name, lang1, lang2, stream)
+            iterator = self.get_iterator(iter_name, lang1, lang2, stream, return_indices=return_indices)
         try:
             x = next(iterator)
         except StopIteration:
-            iterator = self.get_iterator(iter_name, lang1, lang2, stream)
+            iterator = self.get_iterator(iter_name, lang1, lang2, stream, return_indices=return_indices)
             x = next(iterator)
         if lang2 is None or lang1 < lang2:
-            data, lengths = x
+            if return_indices:
+                (data, lengths), indices = x
+            else:
+                data, lengths = x
             if input_format == 'eat':
                 assert len(data.shape) == 2
                 sl, bs = data.shape
@@ -366,7 +372,7 @@ class Trainer:
                 unpacked = data[sl // 9, 9, bs]
                 data = unpacked[:, :3].view(-1, bs)
                 lengths = lengths // 3
-            return data, lengths
+            return data, lengths, indices if return_indices else data, lengths
         else:
             return x[::-1]  # NOTE Not sure why this is reversed but I'm keeping it as it is.
 
@@ -861,6 +867,9 @@ class SingleTrainer(Trainer):
 
 class EncDecTrainer(Trainer):
 
+    add_argument('supervised_graph', dtype=str, default='', msg='supervise the process of graph induction')
+    add_argument('lambda_graph', dtype=float, default=0.0, msg='hyperparameter for graph induction loss')
+
     def __init__(self, encoder, decoder, data, params):
 
         self.MODEL_NAMES = ['encoder', 'decoder']
@@ -872,6 +881,14 @@ class EncDecTrainer(Trainer):
         self.params = params
 
         super().__init__(data, params)
+
+        self.supervised_graph = set()
+        if params.supervised_graph:
+            self.supervised_graph.update(params.supervised_graph.split(','))
+            if not self.supervised_graph <= set(params.lgs.split('-')):
+                raise RuntimeError('You can only supervise the graph inductive for the given languages.')
+        if self.supervised_graph and self.ae_add_noise:
+            raise NotImplementedError('Cannot have supervision for graph and added noise to AE for now')
 
     @log_this(arg_list=['lang1', 'lang2'])
     def denoise_mt_step(self, lang1, lang2, lambda_coeff):
@@ -910,9 +927,10 @@ class EncDecTrainer(Trainer):
         lang2_id = params.lang2id[lang2]
 
         # generate batch
+        use_graph_loss = lang1 in self.supervised_graph
         if lang1 == lang2:
             input_format = 'eat' if ep else 'plain'
-            (x1, len1) = self.get_batch('ae', lang1, input_format=input_format)
+            x1, len1, *indices = self.get_batch('ae', lang1, input_format=input_format, return_indices=use_graph_loss)
             (x2, len2) = (x1, len1)
             if not ep or params.ep_add_noise:
                 (x1, len1) = self.add_noise(x1, len1)
@@ -936,13 +954,18 @@ class EncDecTrainer(Trainer):
             if lang1 != lang2:
                 raise RuntimeError('use_graph not activated for BT')
             else:
-                graph_info = self.verifier(x1)
+                graph_info = self.verifier.get_graph_info(x1)
 
         # encode source sentence
         kwargs = {'x': x1, 'lengths': len1, 'langs': langs1, 'causal': False}
         if graph_info is not None:
             kwargs['graph_info'] = graph_info
-        enc1 = self.encoder('fwd', **kwargs)
+        if use_graph_loss:  # NOTE(j_luo) Return graph data for supervising graph induction.
+            assert len(indices) == 1
+            indices = indices[0]
+            kwargs['return_graph_data'] = True
+            graph_target = self.verifier.get_graph_target(indices)
+        enc1, *graph_data = self.encoder('fwd', **kwargs)
         enc1 = enc1.transpose(0, 1)
 
         # Modify src_len if use_graph. It has been changed to represent words instead of BPEs.
@@ -956,6 +979,13 @@ class EncDecTrainer(Trainer):
         _, loss = self.decoder('predict', tensor=dec2, pred_mask=pred_mask, y=y, get_scores=False)
         self.stats[('AE-%s' % lang1) if lang1 == lang2 else ('MT-%s-%s' % (lang1, lang2))].append(loss.item())
         loss = lambda_coeff * loss
+
+        # Add the graph induction loss if needed.
+        if use_graph_loss:
+            assert len(graph_data) == 1
+            graph_data = graph_data[0]
+            loss_edge_type, loss_edge_norm = self.verifier.get_graph_loss(graph_data, graph_target)
+            loss = loss + params.lambda_graph *
 
         # optimize
         self.optimize(loss)

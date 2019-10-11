@@ -1,11 +1,13 @@
-from devlib import get_range
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 from torch_geometric.nn import RGCNConv
 
 from arglib import add_argument, init_g_attr
+from devlib import get_range
 
-from .transformer import TransformerModel, MultiHeadAttention
+from .transformer import MultiHeadAttention, TransformerModel
 
 
 @init_g_attr
@@ -63,17 +65,6 @@ class ContinuousRGCN(RGCNConv):
         out = (weight.unsqueeze(dim=1) @ h_e_basis).squeeze(dim=-2)
         return out * edge_norm.view(-1, 1)
 
-        # w = torch.matmul(self.att, self.basis.view(self.num_bases, -1))
-
-        # # NOTE(j_luo) This is the continuous version.
-        # # size: E x nr @ nr x (n_in * n_out) -> E x (n_in * n_out)
-        # w = w.view(self.num_relations, self.in_channels * self.out_channels)
-        # w = (edge_type @ w).view(-1, self.in_channels, self.out_channels)
-        # # size: E x 1 x n_in @ E x n_in x n_out -> E x 1 x n_out -> E x n_out
-        # out = torch.bmm(x_j.unsqueeze(1), w).squeeze(-2)
-
-        # return out * edge_norm.view(-1, 1)
-
 
 @init_g_attr(default='property')
 class GraphPredictor(nn.Module):
@@ -104,6 +95,17 @@ class GraphPredictor(nn.Module):
         return norms, type_probs
 
 
+Tensor = torch.Tensor
+
+
+@dataclass
+class GraphData:
+    node_features: Tensor
+    edge_index: Tensor
+    edge_norm: Tensor
+    edge_type: Tensor
+
+
 class Graphormer(TransformerModel):
 
     def __init__(self, params, dico, is_encoder, with_output):
@@ -112,19 +114,23 @@ class Graphormer(TransformerModel):
         self.graph_predictor = GraphPredictor()
         self.rgcn = ContinuousRGCN()
 
-    def fwd(self, x, lengths, causal, src_enc=None, src_len=None, positions=None, langs=None, cache=None, graph_info=None):
+    def fwd(self, x, lengths, causal, src_enc=None, src_len=None, positions=None, langs=None, cache=None, graph_info=None, return_graph_data=False):
         assert graph_info is not None
         h = super().fwd(x, lengths, causal, src_enc=src_enc, src_len=src_len, positions=positions, langs=langs, cache=cache)
         h = h.transpose(0, 1)
         assembled_h = self.assembler(h, graph_info.bpe_mask, graph_info.word2bpe)
         norms, type_probs = self.graph_predictor(assembled_h, graph_info.word_mask)
-        # Prepare node_features, edge_index, edge_norms and edge_types.
-        node_features, edge_index, edge_norm, edge_type = self._prepare_for_geometry(assembled_h, norms, type_probs)
-        graph_h = self.rgcn(x=node_features, edge_index=edge_index, edge_norm=edge_norm, edge_type=edge_type)
+        # Prepare node_features, edge_index, edge_norm and edge_type.
+        graph_data = self._prepare_for_geometry(assembled_h, norms, type_probs)
+        graph_h = self.rgcn(x=graph_data.node_features, edge_index=graph_data.edge_index,
+                            edge_norm=graph_data.edge_norm, edge_type=graph_data.edge_type)
         # Now reshape graph_h for later usage. Note that the length dimension has changed to represent words instead of BPEs.
         bs, wl, _ = assembled_h.shape
         graph_h = graph_h.view(bs, wl, -1).transpose(0, 1)
-        return graph_h
+        if return_graph_data:
+            return graph_h, graph_data
+        else:
+            return graph_h
 
     def _prepare_for_geometry(self, assembled_h, norms, type_probs):
         """
@@ -161,4 +167,4 @@ class Graphormer(TransformerModel):
         # edge_types is similar.
         edge_types = type_probs.view(E, nr)
 
-        return node_features, edge_index, edge_norms, edge_types
+        return GraphData(node_features, edge_index, edge_norms, edge_types)

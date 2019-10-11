@@ -64,7 +64,7 @@ class StreamDataset(object):
         self.n_batches = b - a
         self.n_sentences = (self.data == self.eos).sum().item()
 
-    def get_iterator(self, shuffle, subsample=1):
+    def get_iterator(self, shuffle, subsample=1, return_indices=False):
         """
         Return a sentences iterator.
         """
@@ -72,7 +72,8 @@ class StreamDataset(object):
         for i in indexes:
             a = self.bptt * i
             b = self.bptt * (i + 1)
-            yield torch.from_numpy(self.data[a:b].astype(np.int64)), self.lengths
+            batch =  torch.from_numpy(self.data[a:b].astype(np.int64)), self.lengths
+            yield batch, indexes if return_indices else batch
 
 
 class Dataset(object):
