@@ -22,7 +22,7 @@ class Assembler(MultiHeadAttention):
     def forward(self, h_in, bpe_mask, word2bpe):
         # Derive additive `attn_mask` from `bpe_mask`.
         attn_bpe_output, attn_bpe_output_weights = super().forward(h_in, bpe_mask, return_weights=True)
-        # word2bpe (l_word x l_bpe) @ attn_bpe_output (l_bpe x bs x d) -> attn_word_output (l_word x bs x d)
+        # word2bpe (bs x l_word x l_bpe) @ attn_bpe_output (bs x l_bpe x d) -> attn_word_output (bs x l_word x d)
         bs, l_word, l_bpe = word2bpe.shape
         attn_word_output = word2bpe @ attn_bpe_output
         return attn_word_output
@@ -108,29 +108,51 @@ class GraphData:
 
 class Graphormer(TransformerModel):
 
+    add_argument('ablation_mode', default='full', dtype=str,
+                 msg='ablation mode. full means full model, ffn replaces rgcn with ffn, and none means using assembler only.')
+
     def __init__(self, params, dico, is_encoder, with_output):
         super().__init__(params, dico, is_encoder, with_output)
         self.assembler = Assembler()
-        self.graph_predictor = GraphPredictor()
-        self.rgcn = ContinuousRGCN()
+        self.ablation_mode = params.ablation_mode
+
+        if self.ablation_mode == 'full':
+            self.graph_predictor = GraphPredictor()
+            self.rgcn = ContinuousRGCN()
+        elif self.ablation_mode == 'ffn':
+            # FIXME(j_luo) check if the #params is roughly the same as rgcn.
+            self.linear = nn.Linear(params.emb_dim, params.emb_dim)
+        elif self.ablation_mode == 'none':
+            pass
+        else:
+            raise ValueError(f'Unsupported ablation mode {self.ablation_mode}.')
 
     def fwd(self, x, lengths, causal, src_enc=None, src_len=None, positions=None, langs=None, cache=None, graph_info=None, return_graph_data=False):
         assert graph_info is not None
+        assert not return_graph_data or self.ablation_mode == 'full'
+
         h = super().fwd(x, lengths, causal, src_enc=src_enc, src_len=src_len, positions=positions, langs=langs, cache=cache)
         h = h.transpose(0, 1)
         assembled_h = self.assembler(h, graph_info.bpe_mask, graph_info.word2bpe)
-        norms, type_probs = self.graph_predictor(assembled_h, graph_info.word_mask)
-        # Prepare node_features, edge_index, edge_norm and edge_type.
-        graph_data = self._prepare_for_geometry(assembled_h, norms, type_probs)
-        graph_h = self.rgcn(x=graph_data.node_features, edge_index=graph_data.edge_index,
-                            edge_norm=graph_data.edge_norm, edge_type=graph_data.edge_type)
-        # Now reshape graph_h for later usage. Note that the length dimension has changed to represent words instead of BPEs.
-        bs, wl, _ = assembled_h.shape
-        graph_h = graph_h.view(bs, wl, -1).transpose(0, 1)
-        if return_graph_data:
-            return graph_h, graph_data
+        if self.ablation_mode == 'full':
+            norms, type_probs = self.graph_predictor(assembled_h, graph_info.word_mask)
+            # Prepare node_features, edge_index, edge_norm and edge_type.
+            graph_data = self._prepare_for_geometry(assembled_h, norms, type_probs)
+            output = self.rgcn(x=graph_data.node_features, edge_index=graph_data.edge_index,
+                               edge_norm=graph_data.edge_norm, edge_type=graph_data.edge_type)
+            # Now reshape output for later usage. Note that the length dimension has changed to represent words instead of BPEs.
+            bs, wl, _ = assembled_h.shape
+            output = output.view(bs, wl, -1)
+        elif self.ablation_mode == 'ffn':
+            output = self.linear(assembled_h)
         else:
-            return graph_h
+            output = assembled_h
+
+        output = output.transpose(0, 1)
+        if return_graph_data:
+            return output, graph_data
+        else:
+            return output
 
     def _prepare_for_geometry(self, assembled_h, norms, type_probs):
         """
