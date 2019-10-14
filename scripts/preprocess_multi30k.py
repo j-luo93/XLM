@@ -61,7 +61,7 @@ if __name__ == "__main__":
     add_argument('codes', dtype=str)
     add_argument('seed', dtype=int, default=1234)
     add_argument('split_lines', dtype=int, nargs=2)
-    add_argument('eat', dtype=bool, default=False)
+    add_argument('eat', dtype=str, default='', choices=['', 'eat', 'neo'])
     parse_args()
 
     # Use random seed to make sure train split is persistent.
@@ -136,13 +136,16 @@ if __name__ == "__main__":
 
     # For eat, we need to get the eat files first.
     if g.eat:
-        eat_dir = out_dir / 'processed-eat'
+        eat_dir = out_dir / f'processed-{g.eat}'
         pipeline.parse(folder=eat_dir)
         pipeline.collapse()
-        pipeline.convert_eat()
+        if g.eat == 'eat':
+            pipeline.convert_eat()
+        else:
+            pipeline.convert_neo()
         # After conversion, some texts are missing due to empty EAT sequence.
         for split in ['dev', 'test']:
-            pipeline.align(Key(split, lang1), Key(split, lang2))
+            pipeline.align(Key(split, lang1), Key(split, lang2), op=g.eat)
 
     # Apply BPE.
     folder = eat_dir if g.eat else processed_dir
