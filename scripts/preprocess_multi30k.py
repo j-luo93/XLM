@@ -136,13 +136,14 @@ if __name__ == "__main__":
 
     # For eat, we need to get the eat files first.
     if g.eat:
-        eat_dir = out_dir / f'processed-{g.eat}'
-        pipeline.parse(folder=eat_dir)
+        # Save conll-related files here.
+        pipeline.parse(folder=out_dir / 'conll')
         pipeline.collapse()
+        eat_dir = out_dir / f'processed-{g.eat}' 
         if g.eat == 'eat':
-            pipeline.convert_eat()
+            pipeline.convert_eat(folder=eat_dir)
         else:
-            pipeline.convert_neo()
+            pipeline.convert_neo(folder=eat_dir)
         # After conversion, some texts are missing due to empty EAT sequence.
         for split in ['dev', 'test']:
             pipeline.align(Key(split, lang1), Key(split, lang2), op=g.eat)
