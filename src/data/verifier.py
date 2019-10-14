@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
 
+import torch
+
 from arglib import init_g_attr
 from devlib import get_length_mask, get_range, get_tensor, get_zeros
 
@@ -24,13 +26,16 @@ class GraphInfo:
 @init_g_attr
 class Verifier:
 
-    def __init__(self, data_path, lgs):
+    def __init__(self, data_path, lgs, supervised_graph):
         super().__init__()
         src_lang, tgt_lang = lgs.split('-')
-        src_loaded = torch.load(Path(data_path) / f'train.{src_lang}.grf.pth')
-        tgt_loaded = torch.load(Path(data_path) / f'train.{tgt_lang}.grf.pth')
-        self.src_graph = src_loaded['graph']
-        self.tgt_graph = tgt_loaded['graph']
+        if supervised_graph:
+            src_loaded = torch.load(Path(data_path) / f'train.{src_lang}.grf.pth')
+            tgt_loaded = torch.load(Path(data_path) / f'train.{tgt_lang}.grf.pth')
+            self.src_graph = src_loaded['graph']
+            self.tgt_graph = tgt_loaded['graph']
+        else:
+            src_loaded = torch.load(Path(data_path) / f'valid.{src_lang}.pth')
         self.dico = src_loaded['dico']
         self.incomplete_bpe = set()
         incomplete_idx = list()
@@ -81,7 +86,7 @@ class Verifier:
         # edge_type =
         return GraphData(None, None, edge_norm, edge_type)
 
-    def get_graph_loss(self, graph_data: GraphData, graph_target: GraphData) -> Tuple(Tensor, Tensor):
+    def get_graph_loss(self, graph_data: GraphData, graph_target: GraphData) -> Tuple[Tensor, Tensor]:
         """
         Sizes for graph_data and graph_target:
                             graph_data      graph_target

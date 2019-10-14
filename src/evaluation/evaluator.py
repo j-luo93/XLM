@@ -477,7 +477,7 @@ class EncDecEvaluator(Evaluator):
             # Get graph_info if needed.
             graph_info = None
             if self.trainer.use_graph:
-                graph_info = self.trainer.verifier(x1)
+                graph_info = self.trainer.verifier.get_graph_info(x1)
 
             kwargs = {'x': x1, 'lengths': len1, 'langs': langs1, 'causal': False}
             if graph_info is not None:

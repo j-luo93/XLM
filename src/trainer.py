@@ -372,7 +372,7 @@ class Trainer:
                 unpacked = data[sl // 9, 9, bs]
                 data = unpacked[:, :3].view(-1, bs)
                 lengths = lengths // 3
-            return data, lengths, indices if return_indices else data, lengths
+            return (data, lengths, indices) if return_indices else (data, lengths)
         else:
             return x[::-1]  # NOTE Not sure why this is reversed but I'm keeping it as it is.
 
@@ -965,7 +965,11 @@ class EncDecTrainer(Trainer):
             indices = indices[0]
             kwargs['return_graph_data'] = True
             graph_target = self.verifier.get_graph_target(indices)
-        enc1, *graph_data = self.encoder('fwd', **kwargs)
+        graph_data = None
+        if use_graph_loss:
+            enc1, graph_data = self.encoder('fwd', **kwargs)
+        else:
+            enc1 = self.encoder('fwd', **kwargs)
         enc1 = enc1.transpose(0, 1)
 
         # Modify src_len if use_graph. It has been changed to represent words instead of BPEs.
@@ -985,7 +989,7 @@ class EncDecTrainer(Trainer):
             assert len(graph_data) == 1
             graph_data = graph_data[0]
             loss_edge_type, loss_edge_norm = self.verifier.get_graph_loss(graph_data, graph_target)
-            loss = loss + params.lambda_graph *
+            # loss = loss + params.lambda_graph *
 
         # optimize
         self.optimize(loss)
