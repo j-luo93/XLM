@@ -889,6 +889,8 @@ class EncDecTrainer(Trainer):
                 raise RuntimeError('You can only supervise the graph inductive for the given languages.')
         if self.supervised_graph and self.ae_add_noise:
             raise NotImplementedError('Cannot have supervision for graph and added noise to AE for now')
+        if self.supervised_graph and not self.use_graph:
+            raise ValueError(f'Must use graph in order to use supervision for graph.')
 
     @log_this(arg_list=['lang1', 'lang2'])
     def denoise_mt_step(self, lang1, lang2, lambda_coeff):
@@ -927,7 +929,7 @@ class EncDecTrainer(Trainer):
         lang2_id = params.lang2id[lang2]
 
         # generate batch
-        use_graph_loss = lang1 in self.supervised_graph
+        use_graph_loss = (lang1 in self.supervised_graph) and (lang1 == lang2)
         if lang1 == lang2:
             input_format = 'eat' if ep else 'plain'
             x1, len1, *indices = self.get_batch('ae', lang1, input_format=input_format, return_indices=use_graph_loss)
@@ -964,7 +966,7 @@ class EncDecTrainer(Trainer):
             assert len(indices) == 1
             indices = indices[0]
             kwargs['return_graph_data'] = True
-            graph_target = self.verifier.get_graph_target(indices)
+            graph_target = self.verifier.get_graph_target(lang1, max(graph_info.word_lengths), indices)
         graph_data = None
         if use_graph_loss:
             enc1, graph_data = self.encoder('fwd', **kwargs)
@@ -986,10 +988,8 @@ class EncDecTrainer(Trainer):
 
         # Add the graph induction loss if needed.
         if use_graph_loss:
-            assert len(graph_data) == 1
-            graph_data = graph_data[0]
             loss_edge_type, loss_edge_norm = self.verifier.get_graph_loss(graph_data, graph_target)
-            # loss = loss + params.lambda_graph *
+            loss = loss + params.lambda_graph * (loss_edge_type + loss_edge_norm)
 
         # optimize
         self.optimize(loss)

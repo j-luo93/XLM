@@ -99,7 +99,7 @@ def add_main_arguments():
                  msg="Randomly blank input words (0 to disable)")
 
     # data
-    add_argument("data_path", dtype=str, default="",
+    add_argument("data_path", dtype='path', default="",
                  msg="Data path")
     add_argument("lgs", dtype=str, default="",
                  msg="Languages (lg1-lg2-lg3 .. ex: en-fr-es-de)")

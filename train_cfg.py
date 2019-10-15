@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Tuple
 
 from arglib import Registry
@@ -41,7 +42,7 @@ class ParamsFromXLM:
         self.lgs = f'{src}-{tgt}'
         self.stopping_criterion = f'valid_{src}-{tgt}_mt_bleu,10'
         self.validation_metrics = f'valid_{src}-{tgt}_mt_bleu'
-        self.data_path = f"./data/processed/{src}-{tgt}/"
+        self.data_path = Path(f"./data/processed/{src}-{tgt}/")
         self.exp_name = f"unsupMT_{src}{tgt}"
 
 
@@ -101,3 +102,17 @@ class DeEnMulti30KEatNoBt(DeEnMulti30KBaselineNoBt):
         tgt = cls.TGT_LANG
         self.data_path = f"./data/multi30k/{src}-{tgt}/processed-eat"
         self.exp_name = f"unsupMT_multi30K_EAT_{src}{tgt}"
+
+
+@reg
+class DeEnMulti30KNeoNoBt(DeEnMulti30KBaselineNoBt):
+
+    use_graph: bool = True
+
+    def __post_init__(self):
+        super().__post_init__()
+        cls = type(self)
+        src = cls.SRC_LANG
+        tgt = cls.TGT_LANG
+        self.data_path = f"./data/multi30k/{src}-{tgt}/processed-neo"
+        self.exp_name = f"unsupMT_multi30K_neo_{src}{tgt}"

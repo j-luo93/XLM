@@ -2,7 +2,7 @@
 Verify the boundaries of BPE segments.
 """
 from dataclasses import dataclass
-from pathlib import Path
+from enum import Enum, unique
 from typing import List, Tuple
 
 import torch
@@ -23,20 +23,58 @@ class GraphInfo:
     word2bpe: Tensor
 
 
-@init_g_attr
+@unique
+class EdgeType(Enum):
+    # NOTE(j_luo) I'm now keeping three types of features: agent, theme and modifier.
+    AGENT = 0
+    THEME = 1
+    MODIFIER = 2
+
+
+@dataclass
+class Edge:
+    u: int
+    v: int
+    t: EdgeType
+
+
+@dataclass
+class Graph:
+    edges: List[Edge]
+
+    def __len__(self):
+        return len(self.edges)
+
+
+def _read_graphs(path):
+    graphs = list()
+    with path.open('r', encoding='utf8') as fin:
+        for line in fin:
+            segs = line.strip().split()
+            edges = list()
+            for seg in segs:
+                u_idx, v_idx, t = seg.split('-')
+                u_idx, v_idx = map(int, [u_idx, v_idx])
+                if t not in {'agent', 'theme'}:
+                    t = 'modifier'
+                t = getattr(EdgeType, t.upper())
+                e = Edge(u_idx, v_idx, t)
+                edges.append(e)
+            graphs.append(Graph(edges))
+    return graphs
+
+
+@init_g_attr(default='property')
 class Verifier:
 
     def __init__(self, data_path, lgs, supervised_graph):
         super().__init__()
         src_lang, tgt_lang = lgs.split('-')
         if supervised_graph:
-            src_loaded = torch.load(Path(data_path) / f'train.{src_lang}.grf.pth')
-            tgt_loaded = torch.load(Path(data_path) / f'train.{tgt_lang}.grf.pth')
-            self.src_graph = src_loaded['graph']
-            self.tgt_graph = tgt_loaded['graph']
-        else:
-            src_loaded = torch.load(Path(data_path) / f'valid.{src_lang}.pth')
-        self.dico = src_loaded['dico']
+            self.graphs = dict()
+            for lang in [src_lang, tgt_lang]:
+                self.graphs[lang] = _read_graphs(data_path / f'train.{lang}.tok.cvtx.neo.txt')
+        self.dico = torch.load(data_path / f'valid.{src_lang}.pth')['dico']
         self.incomplete_bpe = set()
         incomplete_idx = list()
         for bpe, idx in self.dico.word2id.items():
@@ -78,12 +116,21 @@ class Verifier:
 
         return GraphInfo(bpe_mask, word_mask, word_lengths, word2bpe)
 
-    def get_graph_target(self, indices: List[int]) -> GraphData:
-        # FIXME(j_luo)
-        # node_features =
-        # edge_index =
-        # edge_norm =
-        # edge_type =
+    def get_graph_target(self, lang: str, max_len: int, indices: List[int]) -> GraphData:
+        graphs = [self.graphs[lang][i] for i in indices]
+        bs = len(graphs)
+        ijkv = list()
+        for batch_i, graph in enumerate(graphs):
+            assert len(graph) <= max_len
+            for e in graph.edges:
+                ijkv.append((batch_i, e.u, e.v, e.t.value))
+        i, j, k, v = zip(*ijkv)
+        edge_norm = get_zeros([bs, max_len, max_len])
+        edge_type = get_zeros([bs, max_len, max_len]).long()
+        edge_norm[i, j, k] = 1.0
+        edge_type[i, j, k] = get_tensor(v)
+        edge_norm = edge_norm.view(-1)
+        edge_type = edge_type.view(-1)
         return GraphData(None, None, edge_norm, edge_type)
 
     def get_graph_loss(self, graph_data: GraphData, graph_target: GraphData) -> Tuple[Tensor, Tensor]:
@@ -95,10 +142,13 @@ class Verifier:
         where E = bs x wl x wl.
         """
         # NOTE(j_luo) This determines whether it's an actual edge (in contrast to a padded edge) or not.
+        assert len(graph_data.edge_norm) == len(graph_target.edge_norm)
+        assert len(graph_data.edge_type) == len(graph_target.edge_type)
+
         edge_mask = graph_target.edge_norm
 
-        loss_edge_type = graph_data.edge_type.clamp(
-            min=1e-8).log().gather(1, graph_target.edge_type.view(-1, 1)).view(-1)
+        edge_types_log_probs = (1e-8 + graph_data.edge_type).log()
+        loss_edge_type = edge_types_log_probs.gather(1, graph_target.edge_type.view(-1, 1)).view(-1)
         loss_edge_type = (loss_edge_type * edge_mask).sum()
 
         loss_edge_norm = (graph_data.edge_norm.clamp(min=1e-8, max=1.0).log() * edge_mask).sum()
