@@ -19,7 +19,7 @@ from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
 
 from arglib import add_argument, init_g_attr
-from trainlib import Tracker, log_this
+from trainlib import Metric, Metrics, Tracker, log_this
 
 from .data.verifier import Verifier
 from .model.memory import HashingMemory
@@ -109,12 +109,12 @@ class Trainer:
         params.mask_scores[counts == 0] = 0       # do not predict special tokens
 
         # validation metrics
-        self.metrics = []
+        self.eval_metrics = []
         metrics = [m for m in params.validation_metrics.split(',') if m != '']
         for m in metrics:
             m = (m[1:], False) if m[0] == '_' else (m, True)
-            self.metrics.append(m)
-        self.best_metrics = {metric: (-1e12 if biggest else 1e12) for (metric, biggest) in self.metrics}
+            self.eval_metrics.append(m)
+        self.best_metrics = {metric: (-1e12 if biggest else 1e12) for (metric, biggest) in self.eval_metrics}
 
         # training statistics
         self.tracker = Tracker()
@@ -126,19 +126,7 @@ class Trainer:
         self.tracker.add_update_fn('n_iter', 'add')
         self.tracker.add_update_fn('n_total_iter', 'add')
         self.tracker.add_update_fn('n_sentences', 'addx')
-        self.stats = OrderedDict(
-            [('processed_s', 0), ('processed_w', 0)] +
-            [('CLM-%s' % l, []) for l in params.langs] +
-            [('CLM-%s-%s' % (l1, l2), []) for l1, l2 in data['para'].keys()] +
-            [('CLM-%s-%s' % (l2, l1), []) for l1, l2 in data['para'].keys()] +
-            [('MLM-%s' % l, []) for l in params.langs] +
-            [('MLM-%s-%s' % (l1, l2), []) for l1, l2 in data['para'].keys()] +
-            [('MLM-%s-%s' % (l2, l1), []) for l1, l2 in data['para'].keys()] +
-            [('PC-%s-%s' % (l1, l2), []) for l1, l2 in params.pc_steps] +
-            [('AE-%s' % lang, []) for lang in params.ae_steps] +
-            [('MT-%s-%s' % (l1, l2), []) for l1, l2 in params.mt_steps] +
-            [('BT-%s-%s-%s' % (l1, l2, l3), []) for l1, l2, l3 in params.bt_steps]
-        )
+        self.metrics = Metrics()
         self.last_time = time.time()
 
         # reload potential checkpoints
@@ -288,12 +276,9 @@ class Trainer:
 
         s_iter = "%7i - " % self.tracker.n_total_iter
         s_stat = ' || '.join([
-            '{}: {:7.4f}'.format(k, np.mean(v)) for k, v in self.stats.items()
-            if type(v) is list and len(v) > 0
+            '{}: {:7.4f}'.format(name, metric.mean) for name, metric in self.metrics.items()
+            if metric.report_mean and metric.mean > 0
         ])
-        for k in self.stats.keys():
-            if type(self.stats[k]) is list:
-                del self.stats[k][:]
 
         # learning rates
         s_lr = " - "
@@ -304,14 +289,13 @@ class Trainer:
         new_time = time.time()
         diff = new_time - self.last_time
         s_speed = "{:7.2f} sent/s - {:8.2f} words/s - ".format(
-            self.stats['processed_s'] * 1.0 / diff,
-            self.stats['processed_w'] * 1.0 / diff
+            self.metrics.processed_s.total * 1.0 / diff,
+            self.metrics.processed_w.total * 1.0 / diff
         )
-        self.stats['processed_s'] = 0
-        self.stats['processed_w'] = 0
         self.last_time = new_time
+        self.metrics.clear()
 
-        # log speed + stats + learning rate
+        # log speed + metrics + learning rate
         logger.info(s_iter + s_speed + s_stat + s_lr)
 
     def get_iterator(self, iter_name, lang1, lang2, stream, return_indices=False):
@@ -635,7 +619,7 @@ class Trainer:
         """
         if not self.params.is_master:
             return
-        for metric, biggest in self.metrics:
+        for metric, biggest in self.eval_metrics:
             if metric not in scores:
                 logger.warning("Metric \"%s\" not found in scores!" % metric)
                 continue
@@ -744,16 +728,20 @@ class Trainer:
         # forward / loss
         tensor = model('fwd', x=x, lengths=lengths, langs=langs, causal=True)
         _, loss = model('predict', tensor=tensor, pred_mask=pred_mask, y=y, get_scores=False)
-        self.stats[('CLM-%s' % lang1) if lang2 is None else ('CLM-%s-%s' % (lang1, lang2))].append(loss.item())
-        loss = lambda_coeff * loss
+        name = ('CLM-%s' % lang1) if lang2 is None else ('CLM-%s-%s' % (lang1, lang2))
+        weight = pred_mask.sum()
+        # NOTE(j_luo) loss is already reduced to mean.
+        loss = Metric(name, loss * weight, weight)
+        self.metrics += loss
+        loss = lambda_coeff * loss.mean
 
         # optimize
         self.optimize(loss)
 
         # number of processed sentences / words
         self.tracker.update('n_sentences', params.batch_size)
-        self.stats['processed_s'] += lengths.size(0)
-        self.stats['processed_w'] += pred_mask.sum().item()
+        self.metrics += Metric('processed_s', lengths.size(0), None, report_mean=False)
+        self.metrics += Metric('processed_w', pred_mask.sum(), None, report_mean=False)
 
     @log_this(arg_list=['lang1', 'lang2'])
     def mlm_step(self, lang1, lang2, lambda_coeff):
@@ -781,16 +769,19 @@ class Trainer:
         # forward / loss
         tensor = model('fwd', x=x, lengths=lengths, positions=positions, langs=langs, causal=False)
         _, loss = model('predict', tensor=tensor, pred_mask=pred_mask, y=y, get_scores=False)
-        self.stats[('MLM-%s' % lang1) if lang2 is None else ('MLM-%s-%s' % (lang1, lang2))].append(loss.item())
-        loss = lambda_coeff * loss
+        name = ('MLM-%s' % lang1) if lang2 is None else ('MLM-%s-%s' % (lang1, lang2))
+        weight = pred_mask.sum()
+        loss = Metric(name, loss * weight, weight)
+        self.metrics += loss
+        loss = lambda_coeff * loss.mean
 
         # optimize
         self.optimize(loss)
 
         # number of processed sentences / words
         self.tracker.update('n_sentences', params.batch_size)
-        self.stats['processed_s'] += lengths.size(0)
-        self.stats['processed_w'] += pred_mask.sum().item()
+        self.metrics += Metric('processed_s', lengths.size(0), 0.0, report_mean=False)
+        self.metrics += Metric('processed_w', pred_mask.sum(), 0.0, report_mean=False)
 
     @log_this(arg_list=['lang1', 'lang2'])
     def pc_step(self, lang1, lang2, lambda_coeff):
@@ -839,6 +830,7 @@ class Trainer:
         emb = (model.module if params.multi_gpu else model).embeddings.weight
         pred = F.linear(h, emb[CLF_ID1].unsqueeze(0), emb[CLF_ID2, 0])
         loss = F.binary_cross_entropy_with_logits(pred.view(-1), y.to(pred.device).type_as(pred))
+        raise NotImplementedError('stats not taken care of here.')
         self.stats['PC-%s-%s' % (lang1, lang2)].append(loss.item())
         loss = lambda_coeff * loss
 
@@ -983,21 +975,26 @@ class EncDecTrainer(Trainer):
 
         # loss
         _, loss = self.decoder('predict', tensor=dec2, pred_mask=pred_mask, y=y, get_scores=False)
-        self.stats[('AE-%s' % lang1) if lang1 == lang2 else ('MT-%s-%s' % (lang1, lang2))].append(loss.item())
-        loss = lambda_coeff * loss
+        name = ('AE-%s' % lang1) if lang1 == lang2 else ('MT-%s-%s' % (lang1, lang2))
+        weight = pred_mask.sum()
+        loss = Metric(name, loss * weight, weight)
+        self.metrics += loss
+        loss = lambda_coeff * loss.mean
 
         # Add the graph induction loss if needed.
+        final_loss = loss
         if use_graph_loss:
-            loss_edge_type, loss_edge_norm = self.verifier.get_graph_loss(graph_data, graph_target)
-            loss = loss + params.lambda_graph * (loss_edge_type + loss_edge_norm)
+            loss_edge_type, loss_edge_norm = self.verifier.get_graph_loss(graph_data, graph_target, lang1)
+            final_loss = loss + params.lambda_graph * (loss_edge_type.mean + loss_edge_norm.mean)
+            self.metrics += Metrics(loss_edge_type, loss_edge_norm)
 
         # optimize
-        self.optimize(loss)
+        self.optimize(final_loss)
 
         # number of processed sentences / words
         self.tracker.update('n_sentences', params.batch_size)
-        self.stats['processed_s'] += len2.size(0)
-        self.stats['processed_w'] += (len2 - 1).sum().item()
+        self.metrics += Metric('processed_s', len2.size(0), 0.0, report_mean=False)
+        self.metrics += Metric('processed_w', (len2 - 1).sum().item(), 0.0, report_mean=False)
 
     @log_this(arg_list=['lang1', 'lang2', 'lang3'])
     def bt_step(self, lang1, lang2, lang3, lambda_coeff):
@@ -1059,12 +1056,16 @@ class EncDecTrainer(Trainer):
 
         # loss
         _, loss = self.decoder('predict', tensor=dec3, pred_mask=pred_mask, y=y1, get_scores=False)
-        self.stats[('BT-%s-%s-%s' % (lang1, lang2, lang3))].append(loss.item())
+        name = ('BT-%s-%s-%s' % (lang1, lang2, lang3))
+        weight = pred_mask.sum()
+        loss = Metric(name, loss * weight, weight)
+        self.metrics += loss
+        loss = loss.mean  # NOTE(j_luo) Didn't see lambda get used here.
 
         # optimize
         self.optimize(loss)
 
         # number of processed sentences / words
         self.tracker.update('n_sentences', params.batch_size)
-        self.stats['processed_s'] += len1.size(0)
-        self.stats['processed_w'] += (len1 - 1).sum().item()
+        self.metrics += Metric('processed_s', len1.size(0), 0.0, report_mean=False)
+        self.metrics += Metric('processed_w', (len1 - 1).sum().item(), 0.0, report_mean=False)

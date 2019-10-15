@@ -533,7 +533,7 @@ class EncDecEvaluator(Evaluator):
         if eval_bleu:
 
             # hypothesis / reference paths
-            hyp_name = 'hyp{0}.{1}-{2}.{3}.txt'.format(scores['now'], lang1, lang2, data_set)
+            hyp_name = 'hyp-{0}.{1}-{2}.{3}.txt'.format(scores['now'], lang1, lang2, data_set)
             hyp_path = os.path.join(params.hyp_path, hyp_name)
             ref_path = params.ref_paths[(lang1, lang2, data_set)]
 

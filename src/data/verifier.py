@@ -9,6 +9,7 @@ import torch
 
 from arglib import init_g_attr
 from devlib import get_length_mask, get_range, get_tensor, get_zeros
+from trainlib import Metric
 
 from ..model.graphormer import GraphData
 
@@ -133,14 +134,14 @@ class Verifier:
         edge_type = edge_type.view(-1)
         return GraphData(None, None, edge_norm, edge_type)
 
-    def get_graph_loss(self, graph_data: GraphData, graph_target: GraphData) -> Tuple[Tensor, Tensor]:
+    def get_graph_loss(self, graph_data: GraphData, graph_target: GraphData, lang: str) -> Tuple[Metric, Metric]:
         """
-        Sizes for graph_data and graph_target:
-                            graph_data      graph_target
-            edge_norm:      E               E
-            edge_type:      E x nr          E
-        where E = bs x wl x wl.
-        """
+            Sizes for graph_data and graph_target:
+                                graph_data      graph_target
+                edge_norm:      E               E
+                edge_type:      E x nr          E
+            where E = bs x wl x wl.
+            """
         # NOTE(j_luo) This determines whether it's an actual edge (in contrast to a padded edge) or not.
         assert len(graph_data.edge_norm) == len(graph_target.edge_norm)
         assert len(graph_data.edge_type) == len(graph_target.edge_type)
@@ -148,9 +149,13 @@ class Verifier:
         edge_mask = graph_target.edge_norm
 
         edge_types_log_probs = (1e-8 + graph_data.edge_type).log()
-        loss_edge_type = edge_types_log_probs.gather(1, graph_target.edge_type.view(-1, 1)).view(-1)
+        loss_edge_type = -edge_types_log_probs.gather(1, graph_target.edge_type.view(-1, 1)).view(-1)
         loss_edge_type = (loss_edge_type * edge_mask).sum()
 
-        loss_edge_norm = (graph_data.edge_norm.clamp(min=1e-8, max=1.0).log() * edge_mask).sum()
+        log_edge_norm = (graph_data.edge_norm + 1e-8).clamp(max=1.0).log()
+        loss_edge_norm = -(log_edge_norm * edge_mask).sum()
 
+        weight = edge_mask.sum()
+        loss_edge_type = Metric(f'loss_edge_type_{lang}', loss_edge_type, weight)
+        loss_edge_norm = Metric(f'loss_edge_norm_{lang}', loss_edge_norm, weight)
         return loss_edge_type, loss_edge_norm
