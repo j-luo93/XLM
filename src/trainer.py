@@ -958,7 +958,7 @@ class EncDecTrainer(Trainer):
             assert len(indices) == 1
             indices = indices[0]
             kwargs['return_graph_data'] = True
-            graph_target = self.verifier.get_graph_target(lang1, max(graph_info.word_lengths), indices)
+            graph_target = self.verifier.get_graph_target(x1, lang1, max(graph_info.word_lengths), indices)
         graph_data = None
         if use_graph_loss:
             enc1, graph_data = self.encoder('fwd', **kwargs)

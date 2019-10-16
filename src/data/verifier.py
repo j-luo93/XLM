@@ -96,8 +96,8 @@ class Verifier:
         bs, l = data.shape
 
         data_off_by_one = torch.cat([get_zeros(bs, 1).long(), data[:, :-1]], dim=1)
-        # A new word is started if both the current bpe and the previous bpe are complete, and it's not a padding.
-        new_word = ~self.incomplete_idx[data] & ~self.incomplete_idx[data_off_by_one] & (data != self.dico.pad_index)
+        # A new word is started if the previous bpe is complete and it's not a padding or <s>.
+        new_word = ~self.incomplete_idx[data_off_by_one] & (data != self.dico.pad_index) & (data != self.dico.bos_index)
         # Form distinct word ids by counting how many new words are formed up to now.
         word_ids = new_word.long().cumsum(dim=1)
         # bpe_mask: value is set to True iff both bpes belong to the same word.
@@ -117,14 +117,20 @@ class Verifier:
 
         return GraphInfo(bpe_mask, word_mask, word_lengths, word2bpe)
 
-    def get_graph_target(self, lang: str, max_len: int, indices: List[int]) -> GraphData:
+    def get_graph_target(self, data: Tensor, lang: str, max_len: int, indices: List[int]) -> GraphData:
+        # NOTE(j_luo)  If for some reason the first one is <s> or </s>, we need to offset the indices.
+        offsets = ((data[0] == self.dico.eos_index) | (data[0] == self.dico.bos_index)).long()
         graphs = [self.graphs[lang][i] for i in indices]
         bs = len(graphs)
+        if len(offsets) != bs:
+            raise RuntimeError('Something is terribly wrong.')
+
         ijkv = list()
         for batch_i, graph in enumerate(graphs):
             assert len(graph) <= max_len
+            offset = offsets[batch_i].item()
             for e in graph.edges:
-                ijkv.append((batch_i, e.u, e.v, e.t.value))
+                ijkv.append((batch_i, e.u + offset, e.v + offset, e.t.value))
         i, j, k, v = zip(*ijkv)
         edge_norm = get_zeros([bs, max_len, max_len])
         edge_type = get_zeros([bs, max_len, max_len]).long()
