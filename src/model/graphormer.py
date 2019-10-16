@@ -71,8 +71,10 @@ class GraphPredictor(nn.Module):
     """Based on the word-level representations, predict the edge types and the edge strengths (or edge norms)."""
 
     add_argument('num_relations', default=5, dtype=int, msg='number of distinct edge types.')
+    add_argument('edge_norm_agg', default='sum', choices=[
+                 'sum', 'mean'], dtype=str, msg='how to aggregate the attention scores to get an edge norm.')
 
-    def __init__(self, emb_dim, dropout, num_relations):
+    def __init__(self, emb_dim, dropout, num_relations, edge_norm_agg):
         super().__init__()
         self.norm_attn = MultiHeadAttention(8, emb_dim, dropout=dropout)
         self.type_attn = MultiHeadAttention(8, emb_dim, dropout=dropout)
@@ -81,8 +83,12 @@ class GraphPredictor(nn.Module):
     def forward(self, h_in, word_mask):
         # Get norms first.
         norm_output, norm_attn_weights = self.norm_attn(h_in, word_mask, return_weights=True)
-        # NOTE(j_luo) Sum all heads. # IDEA(j_luo) Summing might not be the best idea.
-        norm_attn_weights = norm_attn_weights.sum(dim=1)
+        # NOTE(j_luo) Aggregate attention scores to get an edge norm.
+        if self.edge_norm_agg == 'sum':
+            norm_attn_weights = norm_attn_weights.sum(dim=1)
+        else:
+            norm_attn_weights = norm_attn_weights.mean(dim=1)
+
         norms = norm_attn_weights + norm_attn_weights.transpose(1, 2)  # Symmetrize attention weights.
 
         # Get types now.
