@@ -132,10 +132,14 @@ class Verifier:
             for e in graph.edges:
                 ijkv.append((batch_i, e.u + offset, e.v + offset, e.t.value))
         i, j, k, v = zip(*ijkv)
+        v = get_tensor(v)
         edge_norm = get_zeros([bs, max_len, max_len])
         edge_type = get_zeros([bs, max_len, max_len]).long()
+        # NOTE(j_luo) Edges are symmetric.
         edge_norm[i, j, k] = 1.0
-        edge_type[i, j, k] = get_tensor(v)
+        edge_norm[i, k, j] = 1.0
+        edge_type[i, j, k] = v
+        edge_type[i, k, j] = v
         edge_norm = edge_norm.view(-1)
         edge_type = edge_type.view(-1)
         return GraphData(None, None, edge_norm, edge_type)
