@@ -114,8 +114,9 @@ class GraphData:
 
 class Graphormer(TransformerModel):
 
-    add_argument('ablation_mode', default='full', dtype=str,
+    add_argument('ablation_mode', default='full', dtype=str, choices=['full', 'ffn', 'none', 'self_attn'],
                  msg='ablation mode. full means full model, ffn replaces rgcn with ffn, and none means using assembler only.')
+    add_argument("self_attn_layers", default=0, dtype=int, msg='number of layers for self attention layers.')
 
     def __init__(self, params, dico, is_encoder, with_output):
         super().__init__(params, dico, is_encoder, with_output)
@@ -126,12 +127,16 @@ class Graphormer(TransformerModel):
             self.graph_predictor = GraphPredictor()
             self.rgcn = ContinuousRGCN()
         elif self.ablation_mode == 'ffn':
-            # FIXME(j_luo) check if the #params is roughly the same as rgcn.
+            # NOTE(j_luo) This actually is about 10x smaller than 'full' mode.
             self.linear = nn.Linear(params.emb_dim, params.emb_dim)
         elif self.ablation_mode == 'none':
             pass
         else:
-            raise ValueError(f'Unsupported ablation mode {self.ablation_mode}.')
+            if not params.self_attn_layers > 0:
+                raise ValueError(f'Must have at least one layer.')
+            layers = [MultiHeadAttention(8, params.emb_dim, dropout=params.dropout)
+                      for _ in range(params.self_attn_layers)]
+            self.self_attn_layers = nn.Sequential(*layers)
 
     def fwd(self, x, lengths, causal, src_enc=None, src_len=None, positions=None, langs=None, cache=None, graph_info=None, return_graph_data=False):
         assert graph_info is not None
@@ -151,8 +156,12 @@ class Graphormer(TransformerModel):
             output = output.view(bs, wl, -1)
         elif self.ablation_mode == 'ffn':
             output = self.linear(assembled_h)
+        elif self.ablation_mode == 'none':
+            output = assembled_h
         else:
             output = assembled_h
+            for layer in self.self_attn_layers:
+                output = layer(output, graph_info.word_mask)
 
         output = output.transpose(0, 1)
         if return_graph_data:
