@@ -37,6 +37,8 @@ class Trainer:
     add_argument('freeze_emb', dtype=bool, default=False, msg='Freeze embeddings.')
     add_argument('ae_add_noise', dtype=bool, default=True, msg='add noise to ae')
     add_argument('ep_add_noise', default=False, dtype=bool)
+    add_argument('supervised_graph', dtype=str, default='', msg='supervise the process of graph induction')
+    add_argument('lambda_graph', dtype=float, default=0.0, msg='hyperparameter for graph induction loss')
 
     def __init__(self, data, params, use_graph: 'p'):
         """
@@ -141,6 +143,14 @@ class Trainer:
 
         # Whether to add noise to AE.
         self.ae_add_noise = params.ae_add_noise
+
+        self.supervised_graph = set()
+        if params.supervised_graph:
+            self.supervised_graph.update(params.supervised_graph.split(','))
+            if not self.supervised_graph <= set(params.lgs.split('-')):
+                raise ValueError('You can only supervise the graph inductive for the given languages.')
+        if self.supervised_graph and not self.use_graph:
+            raise ValueError(f'Must use graph in order to use supervision for graph.')
 
     def set_parameters(self):
         """
@@ -365,7 +375,7 @@ class Trainer:
         Randomly shuffle input words.
         """
         if self.params.word_shuffle == 0:
-            return x, l
+            return x, l, None
 
         # define noise word scores
         noise = np.random.uniform(0, self.params.word_shuffle, size=(x.size(0) - 1, x.size(1)))
@@ -373,20 +383,22 @@ class Trainer:
 
         assert self.params.word_shuffle > 1
         x2 = x.clone()
+        permutations = list()
         for i in range(l.size(0)):
             # generate a random permutation
             scores = np.arange(l[i] - 1) + noise[:l[i] - 1, i]
             permutation = scores.argsort()
+            permutations.append(permutation)
             # shuffle words
             x2[:l[i] - 1, i].copy_(x2[:l[i] - 1, i][torch.from_numpy(permutation)])
-        return x2, l
+        return x2, l, permutations
 
     def word_dropout(self, x, l):
         """
         Randomly drop input words.
         """
         if self.params.word_dropout == 0:
-            return x, l
+            return x, l, None
         assert 0 < self.params.word_dropout < 1
 
         # define words to drop
@@ -404,7 +416,10 @@ class Trainer:
             new_s = [w for j, w in enumerate(words) if keep[j, i]]
             # we need to have at least one word in the sentence (more than the start / end sentence symbols)
             if len(new_s) == 1:
-                new_s.append(words[np.random.randint(1, len(words))])
+                to_add = np.random.randint(1, len(words))
+                assert not keep[to_add, i]
+                keep[to_add, i] = 1
+                new_s.append(words[to_add])
             new_s.append(eos)
             assert len(new_s) >= 3 and new_s[0] == eos and new_s[-1] == eos
             sentences.append(new_s)
@@ -414,7 +429,7 @@ class Trainer:
         x2 = torch.LongTensor(l2.max(), l2.size(0)).fill_(self.params.pad_index)
         for i in range(l2.size(0)):
             x2[:l2[i], i].copy_(torch.LongTensor(sentences[i]))
-        return x2, l2
+        return x2, l2, keep
 
     def word_blank(self, x, l):
         """
@@ -449,11 +464,13 @@ class Trainer:
         """
         Add noise to the encoder input.
         """
+        permutations, keep = None, None
         if self.ae_add_noise:
-            words, lengths = self.word_shuffle(words, lengths)
-            words, lengths = self.word_dropout(words, lengths)
+            words, lengths, permutations = self.word_shuffle(words, lengths)
+            words, lengths, keep = self.word_dropout(words, lengths)
+            # NOTE(j_luo) Masking words shouldn't affet graph_target.
             words, lengths = self.word_blank(words, lengths)
-        return words, lengths
+        return words, lengths, permutations, keep
 
     def mask_out(self, x, lengths):
         """
@@ -859,9 +876,6 @@ class SingleTrainer(Trainer):
 
 class EncDecTrainer(Trainer):
 
-    add_argument('supervised_graph', dtype=str, default='', msg='supervise the process of graph induction')
-    add_argument('lambda_graph', dtype=float, default=0.0, msg='hyperparameter for graph induction loss')
-
     def __init__(self, encoder, decoder, data, params):
 
         self.MODEL_NAMES = ['encoder', 'decoder']
@@ -873,16 +887,6 @@ class EncDecTrainer(Trainer):
         self.params = params
 
         super().__init__(data, params)
-
-        self.supervised_graph = set()
-        if params.supervised_graph:
-            self.supervised_graph.update(params.supervised_graph.split(','))
-            if not self.supervised_graph <= set(params.lgs.split('-')):
-                raise ValueError('You can only supervise the graph inductive for the given languages.')
-        if self.supervised_graph and self.ae_add_noise:
-            raise NotImplementedError('Cannot have supervision for graph and added noise to AE for now')
-        if self.supervised_graph and not self.use_graph:
-            raise ValueError(f'Must use graph in order to use supervision for graph.')
 
     @log_this(arg_list=['lang1', 'lang2'])
     def denoise_mt_step(self, lang1, lang2, lambda_coeff):
@@ -936,7 +940,7 @@ class EncDecTrainer(Trainer):
             x1, len1, *indices = self.get_batch('ae', lang1, input_format=input_format, return_indices=use_graph_loss)
             (x2, len2) = (x1, len1)
             if not ep or params.ep_add_noise:
-                (x1, len1) = self.add_noise(x1, len1)
+                x1, len1, permutations, keep = self.add_noise(x1, len1)
         else:
             (x1, len1), (x2, len2) = self.get_batch('mt', lang1, lang2)
         langs1 = x1.clone().fill_(lang1_id)
@@ -965,7 +969,6 @@ class EncDecTrainer(Trainer):
         if use_graph_loss:  # NOTE(j_luo) Return graph data for supervising graph induction.
             assert len(indices) == 1
             indices = indices[0]
-            graph_target = self.verifier.get_graph_target(x1, lang1, max(graph_info.word_lengths), indices)
         graph_data = None
         if use_graph_loss:
             enc1, graph_data = self._encode(self.encoder, 'fwd', **kwargs)
@@ -991,6 +994,7 @@ class EncDecTrainer(Trainer):
         # Add the graph induction loss if needed.
         final_loss = loss
         if use_graph_loss:
+            graph_target = self.verifier.get_graph_target(x1, lang1, max(graph_info.word_lengths), indices, permutations=permutations, keep=keep)
             loss_edge_type, loss_edge_norm = self.verifier.get_graph_loss(graph_data, graph_target, lang1)
             final_loss = loss + params.lambda_graph * (loss_edge_type.mean + loss_edge_norm.mean)
             self.metrics += Metrics(loss_edge_type, loss_edge_norm)
@@ -1055,9 +1059,6 @@ class EncDecTrainer(Trainer):
             # training mode
             self.encoder.train()
             self.decoder.train()
-
-        # # FIXME(j_luo) write this
-        # graph_info = self._get_graph_info_from_generation(x2, len2, graph_input=self.use_graph)
 
         # encode generate sentence
         graph_info2 = None

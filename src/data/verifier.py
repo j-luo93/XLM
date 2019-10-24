@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from enum import Enum, unique
 from typing import List, Tuple
 
+import numpy as np
 import torch
 
-from arglib import init_g_attr
+from arglib import add_argument, init_g_attr
 from devlib import get_length_mask, get_range, get_tensor, get_zeros
 from trainlib import Metric
 
@@ -68,7 +69,10 @@ def _read_graphs(path):
 @init_g_attr(default='property')
 class Verifier:
 
-    def __init__(self, data_path, lgs, supervised_graph):
+    add_argument('ae_noise_graph_mode', dtype=str, default='keep', choices=['keep', 'change'],
+                 msg='determines how we handle the graph when noised is added to AE and graph supervision is used')
+
+    def __init__(self, data_path, lgs, supervised_graph, ae_noise_graph_mode: 'n', ae_add_noise):
         super().__init__()
         src_lang, tgt_lang = lgs.split('-')
         if supervised_graph:
@@ -85,6 +89,8 @@ class Verifier:
         idx = get_zeros(len(self.dico)).bool()
         idx[incomplete_idx] = True
         self.incomplete_idx = idx
+
+        self.ae_noise_graph_mode = ae_noise_graph_mode
 
     def get_graph_info(self, data) -> GraphInfo:
         """
@@ -117,8 +123,18 @@ class Verifier:
 
         return GraphInfo(bpe_mask, word_mask, word_lengths, word2bpe)
 
-    def get_graph_target(self, data: Tensor, lang: str, max_len: int, indices: List[int]) -> GraphData:
+    def get_graph_target(
+            self,
+            data: Tensor,
+            lang: str,
+            max_len: int,
+            indices: List[int],
+            permutations: List[np.ndarray] = None,
+            keep: np.ndarray = None) -> GraphData:
         # NOTE(j_luo)  If for some reason the first one is <s> or </s>, we need to offset the indices.
+        if self.ae_noise_graph_mode == 'change':
+            assert permutations is not None and keep is not None
+
         offsets = ((data[0] == self.dico.eos_index) | (data[0] == self.dico.bos_index)).long()
         graphs = [self.graphs[lang][i] for i in indices]
         bs = len(graphs)
@@ -129,8 +145,21 @@ class Verifier:
         for batch_i, graph in enumerate(graphs):
             assert len(graph) <= max_len
             offset = offsets[batch_i].item()
+            # Repeat the permutation and dropout processes and change the graph accordingly.
+            if self.ae_noise_graph_mode == 'change':
+                perm = permutations[batch_i].argsort()
+                perm = np.arange(len(perm))[perm]
             for e in graph.edges:
-                ijkv.append((batch_i, e.u + offset, e.v + offset, e.t.value))
+                u = e.u + offset
+                v = e.v + offset
+                if self.ae_noise_graph_mode == 'change':
+                    u = perm[e.u]
+                    v = perm[e.v]
+                    if keep[u, batch_i] and keep[v, batch_i]:
+                        ijkv.append((batch_i, u, v, e.t.value))
+                else:
+                    ijkv.append((batch_i, u, v, e.t.value))
+
         i, j, k, v = zip(*ijkv)
         v = get_tensor(v)
         edge_norm = get_zeros([bs, max_len, max_len])
