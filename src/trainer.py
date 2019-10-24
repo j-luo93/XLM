@@ -593,7 +593,10 @@ class Trainer:
 
         # reload model parameters
         for name in self.MODEL_NAMES:
-            getattr(self, name).load_state_dict(data[name])
+            try:
+                getattr(self, name).load_state_dict(data[name])
+            except RuntimeError as e:
+                logger.error(str(e))
 
         # reload optimizers
         for name in self.optimizers.keys():
@@ -611,8 +614,8 @@ class Trainer:
                     param_group['lr'] = self.optimizers[name].get_lr_for_step(param_group['num_updates'])
 
         # reload main metrics
-        self.tracker.epoch = data['epoch'] + 1
-        self.tracker.n_total_iter = data['n_total_iter']
+        self.tracker.load('epoch', data['epoch'] + 1)
+        self.tracker.load('n_total_iter', data['n_total_iter'])
         self.best_metrics = data['best_metrics']
         self.best_stopping_criterion = data['best_stopping_criterion']
         logger.warning(
