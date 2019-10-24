@@ -116,3 +116,13 @@ class DeEnMulti30KNeoNoBt(DeEnMulti30KBaselineNoBt):
         tgt = cls.TGT_LANG
         self.data_path = f"./data/multi30k/{src}-{tgt}/processed-neo"
         self.exp_name = f"unsupMT_multi30K_neo_{src}{tgt}"
+
+
+@reg(aliases=['DeEnMulti30KNeoBest'])
+class DeEnMulti30KNeoNoBtNoAENoiseAggMeanSupervisedDeEnFreezeEmb(DeEnMulti30KNeoNoBt):
+
+    supervised_graph: str = 'de,en'
+    lambda_graph: float = 1.0
+    ae_add_noise: bool = False
+    edge_norm_agg: str = 'mean'
+    freeze_emb: bool = True

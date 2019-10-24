@@ -878,7 +878,7 @@ class EncDecTrainer(Trainer):
         if params.supervised_graph:
             self.supervised_graph.update(params.supervised_graph.split(','))
             if not self.supervised_graph <= set(params.lgs.split('-')):
-                raise RuntimeError('You can only supervise the graph inductive for the given languages.')
+                raise ValueError('You can only supervise the graph inductive for the given languages.')
         if self.supervised_graph and self.ae_add_noise:
             raise NotImplementedError('Cannot have supervision for graph and added noise to AE for now')
         if self.supervised_graph and not self.use_graph:
@@ -903,6 +903,15 @@ class EncDecTrainer(Trainer):
     def ep_step(self, lang, lambda_coeff):
         self._check_use_graph('ep')
         return self._mt_step(lang, lang, lambda_coeff, ep=True)
+
+    def _encode(self, encoder, mode, **kwargs):
+        if 'graph_info' in kwargs and kwargs['graph_info'] is None:
+            del kwargs['graph_info']
+        if 'use_graph_loss' in kwargs:
+            if kwargs['use_graph_loss']:
+                kwargs['return_graph_data'] = True
+            del kwargs['use_graph_loss']
+        return encoder(mode, **kwargs)
 
     def _mt_step(self, lang1, lang2, lambda_coeff, ep=False):
         """
@@ -951,19 +960,17 @@ class EncDecTrainer(Trainer):
                 graph_info = self.verifier.get_graph_info(x1)
 
         # encode source sentence
-        kwargs = {'x': x1, 'lengths': len1, 'langs': langs1, 'causal': False}
-        if graph_info is not None:
-            kwargs['graph_info'] = graph_info
+        kwargs = {'x': x1, 'lengths': len1, 'langs': langs1, 'causal': False,
+                  'graph_info': graph_info, 'use_graph_loss': use_graph_loss}
         if use_graph_loss:  # NOTE(j_luo) Return graph data for supervising graph induction.
             assert len(indices) == 1
             indices = indices[0]
-            kwargs['return_graph_data'] = True
             graph_target = self.verifier.get_graph_target(x1, lang1, max(graph_info.word_lengths), indices)
         graph_data = None
         if use_graph_loss:
-            enc1, graph_data = self.encoder('fwd', **kwargs)
+            enc1, graph_data = self._encode(self.encoder, 'fwd', **kwargs)
         else:
-            enc1 = self.encoder('fwd', **kwargs)
+            enc1 = self._encode(self.encoder, 'fwd', **kwargs)
         enc1 = enc1.transpose(0, 1)
 
         # Modify src_len if use_graph. It has been changed to represent words instead of BPEs.
@@ -1013,13 +1020,19 @@ class EncDecTrainer(Trainer):
         lang2_id = params.lang2id[lang2]
 
         # generate source batch
-        x1, len1, graph_info = self.get_batch('bt', lang1, graph_input=self.use_graph)
+        x1, len1 = self.get_batch('bt', lang1)
         langs1 = x1.clone().fill_(lang1_id)
 
         # cuda
         x1, len1, langs1 = to_cuda(x1, len1, langs1)
 
-        # generate a translation
+        # Get graph_info if using graph.
+        graph_info1 = None
+        if self.use_graph:
+            graph_info1 = self.verifier.get_graph_info(x1)  # generate a translation
+        kwargs = {
+            'x': x1, 'lengths': len1, 'langs': langs1, 'causal': False, 'graph_info': graph_info1
+        }
         with torch.no_grad():
 
             # evaluation mode
@@ -1027,9 +1040,13 @@ class EncDecTrainer(Trainer):
             self.decoder.eval()
 
             # encode source sentence and translate it
-            enc1 = _encoder('fwd', x=x1, lengths=len1, langs=langs1, causal=False, graph_info=graph_info)
+            enc1 = self._encode(_encoder, 'fwd', **kwargs)
             enc1 = enc1.transpose(0, 1)
-            x2, len2 = _decoder.generate(enc1, len1, lang2_id, max_len=int(1.3 * len1.max().item() + 5))
+            if graph_info1 is not None:
+                real_len1 = graph_info1.word_lengths
+            else:
+                real_len1 = len1
+            x2, len2 = _decoder.generate(enc1, real_len1, lang2_id, max_len=int(1.3 * len1.max().item() + 5))
             langs2 = x2.clone().fill_(lang2_id)
 
             # free CUDA memory
@@ -1039,11 +1056,18 @@ class EncDecTrainer(Trainer):
             self.encoder.train()
             self.decoder.train()
 
-        # FIXME(j_luo) write this
-        graph_info = self._get_graph_info_from_generation(x2, len2, graph_input=self.use_graph)
+        # # FIXME(j_luo) write this
+        # graph_info = self._get_graph_info_from_generation(x2, len2, graph_input=self.use_graph)
 
         # encode generate sentence
-        enc2 = self.encoder('fwd', x=x2, lengths=len2, langs=langs2, causal=False, graph_info=graph_info)
+        graph_info2 = None
+        if self.use_graph:
+            graph_info2 = self.verifier.get_graph_info(x2)
+        kwargs = {
+            'x': x2, 'lengths': len2, 'langs': langs2, 'causal': False, 'graph_info': graph_info2
+        }
+        enc2 = self._encode(self.encoder, 'fwd', **kwargs)
+        # enc2 = self.encoder('fwd', x=x2, lengths=len2, langs=langs2, causal=False)  # , graph_info=graph_info)
         enc2 = enc2.transpose(0, 1)
 
         # words to predict
@@ -1052,7 +1076,11 @@ class EncDecTrainer(Trainer):
         y1 = x1[1:].masked_select(pred_mask[:-1])
 
         # decode original sentence
-        dec3 = self.decoder('fwd', x=x1, lengths=len1, langs=langs1, causal=True, src_enc=enc2, src_len=len2)
+        if graph_info1 is not None:
+            real_len2 = graph_info2.word_lengths
+        else:
+            real_len2 = len2
+        dec3 = self.decoder('fwd', x=x1, lengths=len1, langs=langs1, causal=True, src_enc=enc2, src_len=real_len2)
 
         # loss
         _, loss = self.decoder('predict', tensor=dec3, pred_mask=pred_mask, y=y1, get_scores=False)
