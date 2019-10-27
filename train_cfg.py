@@ -81,6 +81,17 @@ class DeEnMulti30KBaseline(DeEnBase):
 
 
 @reg
+class DeEnMulti30KBaselineNoAE(DeEnMulti30KBaseline):
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.ae_steps = ''
+        self.word_shuffle = 0.0
+        self.word_dropout = 0.0
+        self.word_blank = 0.0
+
+
+@reg
 class DeEnMulti30KBaselineNoBt(DeEnMulti30KBaseline):
 
     def __post_init__(self):
@@ -126,3 +137,20 @@ class DeEnMulti30KNeoNoBtNoAENoiseAggMeanSupervisedDeEnFreezeEmb(DeEnMulti30KNeo
     ae_add_noise: bool = False
     edge_norm_agg: str = 'mean'
     freeze_emb: bool = True
+
+
+DeEnMulti30KNeoBest = DeEnMulti30KNeoNoBtNoAENoiseAggMeanSupervisedDeEnFreezeEmb
+
+
+@reg
+class DeEnMulti30KNeoOracle(DeEnMulti30KNeoBest):
+
+    oracle_graph: bool = True
+
+
+@reg
+class DeEnMulti30KNeoNoAE(DeEnMulti30KNeoBest):
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.ae_steps = ''

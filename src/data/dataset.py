@@ -72,7 +72,7 @@ class StreamDataset(object):
         for i in indexes:
             a = self.bptt * i
             b = self.bptt * (i + 1)
-            batch =  torch.from_numpy(self.data[a:b].astype(np.int64)), self.lengths
+            batch = torch.from_numpy(self.data[a:b].astype(np.int64)), self.lengths
             yield batch, indexes if return_indices else batch
 
 

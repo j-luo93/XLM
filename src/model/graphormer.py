@@ -1,11 +1,12 @@
 from dataclasses import dataclass
+from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch_geometric.nn import RGCNConv
 
 from arglib import add_argument, init_g_attr
-from devlib import get_range
+from devlib import dataclass_size_repr, get_range, get_zeros
+from torch_geometric.nn import RGCNConv
 
 from .transformer import MultiHeadAttention, TransformerModel
 
@@ -70,7 +71,6 @@ class ContinuousRGCN(RGCNConv):
 class GraphPredictor(nn.Module):
     """Based on the word-level representations, predict the edge types and the edge strengths (or edge norms)."""
 
-    add_argument('num_relations', default=5, dtype=int, msg='number of distinct edge types.')
     add_argument('edge_norm_agg', default='sum', choices=[
                  'sum', 'mean'], dtype=str, msg='how to aggregate the attention scores to get an edge norm.')
 
@@ -111,17 +111,21 @@ class GraphData:
     edge_norm: Tensor
     edge_type: Tensor
 
+    __repr__ = dataclass_size_repr
+
 
 class Graphormer(TransformerModel):
 
     add_argument('ablation_mode', default='full', dtype=str, choices=['full', 'ffn', 'none', 'self_attn'],
                  msg='ablation mode. full means full model, ffn replaces rgcn with ffn, and none means using assembler only.')
     add_argument("self_attn_layers", default=0, dtype=int, msg='number of layers for self attention layers.')
+    add_argument('num_relations', default=5, dtype=int, msg='number of distinct edge types.')
 
     def __init__(self, params, dico, is_encoder, with_output):
         super().__init__(params, dico, is_encoder, with_output)
         self.assembler = Assembler()
         self.ablation_mode = params.ablation_mode
+        self.num_relations = params.num_relations
 
         if self.ablation_mode == 'full':
             self.graph_predictor = GraphPredictor()
@@ -138,7 +142,11 @@ class Graphormer(TransformerModel):
                       for _ in range(params.self_attn_layers)]
             self.self_attn_layers = nn.Sequential(*layers)
 
-    def fwd(self, x, lengths, causal, src_enc=None, src_len=None, positions=None, langs=None, cache=None, graph_info=None, return_graph_data=False):
+    def fwd(self, x, lengths, causal, src_enc=None, src_len=None, positions=None, langs=None,
+            cache=None,
+            graph_info=None,
+            return_graph_data=False,
+            oracle_graph=None):
         assert graph_info is not None
         assert not return_graph_data or self.ablation_mode == 'full'
 
@@ -146,9 +154,12 @@ class Graphormer(TransformerModel):
         h = h.transpose(0, 1)
         assembled_h = self.assembler(h, graph_info.bpe_mask, graph_info.word2bpe)
         if self.ablation_mode == 'full':
-            norms, type_probs = self.graph_predictor(assembled_h, graph_info.word_mask)
-            # Prepare node_features, edge_index, edge_norm and edge_type.
-            graph_data = self._prepare_for_geometry(assembled_h, norms, type_probs)
+            if oracle_graph is None:
+                norms, type_probs = self.graph_predictor(assembled_h, graph_info.word_mask)
+                # Prepare node_features, edge_index, edge_norm and edge_type.
+                graph_data = self._prepare_for_geometry(assembled_h, norms, type_probs)
+            else:
+                graph_data = self._prepare_for_geometry(assembled_h, None, None, oracle_graph=oracle_graph)
             output = self.rgcn(x=graph_data.node_features, edge_index=graph_data.edge_index,
                                edge_norm=graph_data.edge_norm, edge_type=graph_data.edge_type)
             # Now reshape output for later usage. Note that the length dimension has changed to represent words instead of BPEs.
@@ -169,7 +180,7 @@ class Graphormer(TransformerModel):
         else:
             return output
 
-    def _prepare_for_geometry(self, assembled_h, norms, type_probs):
+    def _prepare_for_geometry(self, assembled_h, norms, type_probs, oracle_graph: Optional[GraphData] = None):
         """
         inputs:
             assembled_h:    bs x wl x d
@@ -183,7 +194,12 @@ class Graphormer(TransformerModel):
             edge_types:     E x nr
         where V = bs * wl and E = bs * wl * wl.
         """
-        bs, wl, _, nr = type_probs.shape
+        if oracle_graph is not None:
+            type_probs = oracle_graph.edge_type
+            norms = oracle_graph.edge_norm
+            bs, wl, _ = assembled_h.shape
+        else:
+            bs, wl, _, nr = type_probs.shape
         V = bs * wl
         E = bs * wl * wl
 
@@ -202,6 +218,10 @@ class Graphormer(TransformerModel):
         edge_norms = norms.view(E)
 
         # edge_types is similar.
-        edge_types = type_probs.view(E, nr)
+        if oracle_graph is not None:
+            edge_types = get_zeros(E, self.num_relations)
+            edge_types.scatter_(1, oracle_graph.edge_type.view(-1, 1), oracle_graph.edge_norm.view(-1, 1))
+        else:
+            edge_types = type_probs.view(E, nr)
 
         return GraphData(node_features, edge_index, edge_norms, edge_types)

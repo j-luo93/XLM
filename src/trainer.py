@@ -38,6 +38,7 @@ class Trainer:
     add_argument('ae_add_noise', dtype=bool, default=True, msg='add noise to ae')
     add_argument('ep_add_noise', default=False, dtype=bool)
     add_argument('supervised_graph', dtype=str, default='', msg='supervise the process of graph induction')
+    add_argument('oracle_graph', dtype=bool, default=False, msg='flag to use oracle graph')
     add_argument('lambda_graph', dtype=float, default=0.0, msg='hyperparameter for graph induction loss')
 
     def __init__(self, data, params, use_graph: 'p'):
@@ -151,6 +152,9 @@ class Trainer:
                 raise ValueError('You can only supervise the graph inductive for the given languages.')
         if self.supervised_graph and not self.use_graph:
             raise ValueError(f'Must use graph in order to use supervision for graph.')
+        self.oracle_graph = params.oracle_graph
+        if self.oracle_graph and not self.supervised_graph:
+            raise ValueError('Must use graph in oracle graph mode')
 
     def set_parameters(self):
         """
@@ -368,7 +372,9 @@ class Trainer:
                 lengths = lengths // 3
             return (data, lengths, indices) if return_indices else (data, lengths)
         else:
-            return x[::-1]  # NOTE Not sure why this is reversed but I'm keeping it as it is.
+            # HACK(j_luo)
+            assert not return_indices
+            return x[::-1]
 
     def word_shuffle(self, x, l):
         """
@@ -651,7 +657,7 @@ class Trainer:
 
     def end_interval(self, scores):
         """
-        End the epoch.
+        End the interval.
         """
         # stop if the stopping criterion has not improved after a certain number of epochs
         if self.stopping_criterion is not None and (self.params.is_master or not self.stopping_criterion[0].endswith('_mt_bleu')):
@@ -973,8 +979,13 @@ class EncDecTrainer(Trainer):
             assert len(indices) == 1
             indices = indices[0]
         graph_data = None
+        graph_target = None
         if use_graph_loss:
-            enc1, graph_data = self._encode(self.encoder, 'fwd', **kwargs)
+            graph_target = self.verifier.get_graph_target(x1, lang1, 'train', max(
+                graph_info.word_lengths), indices, permutations=permutations, keep=keep)
+            if self.oracle_graph:
+                kwargs['oracle_graph'] = graph_target
+            enc1, graph_data = self._encode(self.encoder, 'fwd', **kwargs)  # FIXME(j_luo) expecting oracle_graph
         else:
             enc1 = self._encode(self.encoder, 'fwd', **kwargs)
         enc1 = enc1.transpose(0, 1)
@@ -996,8 +1007,7 @@ class EncDecTrainer(Trainer):
 
         # Add the graph induction loss if needed.
         final_loss = loss
-        if use_graph_loss:
-            graph_target = self.verifier.get_graph_target(x1, lang1, max(graph_info.word_lengths), indices, permutations=permutations, keep=keep)
+        if use_graph_loss and not self.oracle_graph:
             loss_edge_type, loss_edge_norm = self.verifier.get_graph_loss(graph_data, graph_target, lang1)
             final_loss = loss + params.lambda_graph * (loss_edge_type.mean + loss_edge_norm.mean)
             self.metrics += Metrics(loss_edge_type, loss_edge_norm)

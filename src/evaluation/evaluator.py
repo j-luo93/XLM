@@ -103,7 +103,7 @@ class Evaluator(object):
             subprocess.Popen('mkdir -p %s' % params.hyp_path, shell=True).wait()
             self.create_reference_files()
 
-    def get_iterator(self, data_set, lang1, lang2=None, stream=False):
+    def get_iterator(self, data_set, lang1, lang2=None, stream=False, return_indices=False):
         """
         Create a new iterator for a dataset.
         """
@@ -129,12 +129,14 @@ class Evaluator(object):
 
         if lang2 is None:
             if stream:
-                iterator = self.data['mono_stream'][lang1][data_set].get_iterator(shuffle=False, subsample=subsample)
+                iterator = self.data['mono_stream'][lang1][data_set].get_iterator(
+                    shuffle=False, subsample=subsample, return_indices=return_indices)
             else:
                 iterator = self.data['mono'][lang1][data_set].get_iterator(
                     shuffle=False,
                     group_by_size=True,
                     n_sentences=n_sentences,
+                    return_indices=return_indices
                 )
         else:
             assert stream is False
@@ -142,11 +144,19 @@ class Evaluator(object):
             iterator = self.data['para'][(_lang1, _lang2)][data_set].get_iterator(
                 shuffle=False,
                 group_by_size=True,
-                n_sentences=n_sentences
+                n_sentences=n_sentences,
+                return_indices=return_indices
             )
 
         for batch in iterator:
-            yield batch if lang2 is None or lang1 < lang2 else batch[::-1]
+            switch = lang2 is None or lang1 < lang2
+            if switch:
+                if return_indices:
+                    yield batch[1], batch[0], batch[2]
+                else:
+                    yield batch[1], batch[0]
+            else:
+                yield batch
 
     def create_reference_files(self):
         """
@@ -458,10 +468,10 @@ class EncDecEvaluator(Evaluator):
         if eval_bleu:
             hypothesis = []
 
-        for batch in self.get_iterator(data_set, lang1, lang2):
+        for batch in self.get_iterator(data_set, lang1, lang2, return_indices=True):
 
             # generate batch
-            (x1, len1), (x2, len2) = batch
+            (x1, len1), (x2, len2), indices = batch
             langs1 = x1.clone().fill_(lang1_id)
             langs2 = x2.clone().fill_(lang2_id)
 
@@ -482,6 +492,10 @@ class EncDecEvaluator(Evaluator):
             kwargs = {'x': x1, 'lengths': len1, 'langs': langs1, 'causal': False}
             if graph_info is not None:
                 kwargs['graph_info'] = graph_info
+            if self.trainer.oracle_graph:
+                graph_target = self.trainer.verifier.get_graph_target(
+                    x1, lang1, data_set, max(graph_info.word_lengths), indices)
+                kwargs['oracle_graph'] = graph_target
 
             # encode source sentence
             enc1 = encoder('fwd', **kwargs)

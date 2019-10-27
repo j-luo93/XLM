@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 from arglib import add_argument, init_g_attr
-from devlib import get_length_mask, get_range, get_tensor, get_zeros
+from devlib import get_length_mask, get_range, get_tensor, get_zeros, dataclass_size_repr
 from trainlib import Metric
 
 from ..model.graphormer import GraphData
@@ -23,6 +23,8 @@ class GraphInfo:
     word_mask: Tensor
     word_lengths: Tensor
     word2bpe: Tensor
+
+    __repr__ = dataclass_size_repr
 
 
 @unique
@@ -78,7 +80,9 @@ class Verifier:
         if supervised_graph:
             self.graphs = dict()
             for lang in [src_lang, tgt_lang]:
-                self.graphs[lang] = _read_graphs(data_path / f'train.{lang}.tok.cvtx.neo.txt')
+                for split in ['train', 'dev', 'test']:
+                    name_split = 'valid' if split == 'dev' else split
+                    self.graphs[(lang, name_split)] = _read_graphs(data_path / f'{split}.{lang}.tok.cvtx.neo.txt')
         self.dico = torch.load(data_path / f'valid.{src_lang}.pth')['dico']
         self.incomplete_bpe = set()
         incomplete_idx = list()
@@ -127,6 +131,7 @@ class Verifier:
             self,
             data: Tensor,
             lang: str,
+            split: str,
             max_len: int,
             indices: List[int],
             permutations: List[np.ndarray] = None,
@@ -136,7 +141,8 @@ class Verifier:
             assert permutations is not None and keep is not None
 
         offsets = ((data[0] == self.dico.eos_index) | (data[0] == self.dico.bos_index)).long()
-        graphs = [self.graphs[lang][i] for i in indices]
+        graphs = self.graphs[(lang, split)]
+        graphs = [graphs[i] for i in indices]
         bs = len(graphs)
         if len(offsets) != bs:
             raise RuntimeError('Something is terribly wrong.')
@@ -165,6 +171,8 @@ class Verifier:
         edge_norm = get_zeros([bs, max_len, max_len])
         edge_type = get_zeros([bs, max_len, max_len]).long()
         # NOTE(j_luo) Edges are symmetric.
+        if max(j) >= max_len or max(k) >= max_len:
+            1/0
         edge_norm[i, j, k] = 1.0
         edge_norm[i, k, j] = 1.0
         edge_type[i, j, k] = v
