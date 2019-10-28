@@ -970,7 +970,7 @@ class EncDecTrainer(Trainer):
             if lang1 != lang2:
                 raise RuntimeError('use_graph not activated for BT')
             else:
-                graph_info = self.verifier.get_graph_info(x1)
+                graph_info = self.verifier.get_graph_info(x1, lang1)
 
         # encode source sentence
         kwargs = {'x': x1, 'lengths': len1, 'langs': langs1, 'causal': False,
@@ -981,8 +981,8 @@ class EncDecTrainer(Trainer):
         graph_data = None
         graph_target = None
         if use_graph_loss:
-            graph_target = self.verifier.get_graph_target(x1, lang1, 'train', max(
-                graph_info.word_lengths), indices, permutations=permutations, keep=keep)
+            graph_target = self.verifier.get_graph_target(x1, graph_info.word_lengths, lang1, 'train',
+                                                          indices, permutations=permutations, keep=keep)
             if self.oracle_graph:
                 kwargs['oracle_graph'] = graph_target
             enc1, graph_data = self._encode(self.encoder, 'fwd', **kwargs)  # FIXME(j_luo) expecting oracle_graph
@@ -1046,7 +1046,7 @@ class EncDecTrainer(Trainer):
         # Get graph_info if using graph.
         graph_info1 = None
         if self.use_graph:
-            graph_info1 = self.verifier.get_graph_info(x1)  # generate a translation
+            graph_info1 = self.verifier.get_graph_info(x1, lang1)  # generate a translation
         kwargs = {
             'x': x1, 'lengths': len1, 'langs': langs1, 'causal': False, 'graph_info': graph_info1
         }
@@ -1076,7 +1076,7 @@ class EncDecTrainer(Trainer):
         # encode generate sentence
         graph_info2 = None
         if self.use_graph:
-            graph_info2 = self.verifier.get_graph_info(x2)
+            graph_info2 = self.verifier.get_graph_info(x2, lang2)
         kwargs = {
             'x': x2, 'lengths': len2, 'langs': langs2, 'causal': False, 'graph_info': graph_info2
         }

@@ -149,7 +149,7 @@ class Evaluator(object):
             )
 
         for batch in iterator:
-            switch = lang2 is None or lang1 < lang2
+            switch = not (lang2 is None or lang1 < lang2)
             if switch:
                 if return_indices:
                     yield batch[1], batch[0], batch[2]
@@ -487,14 +487,14 @@ class EncDecEvaluator(Evaluator):
             # Get graph_info if needed.
             graph_info = None
             if self.trainer.use_graph:
-                graph_info = self.trainer.verifier.get_graph_info(x1)
+                graph_info = self.trainer.verifier.get_graph_info(x1, lang1)
 
             kwargs = {'x': x1, 'lengths': len1, 'langs': langs1, 'causal': False}
             if graph_info is not None:
                 kwargs['graph_info'] = graph_info
             if self.trainer.oracle_graph:
                 graph_target = self.trainer.verifier.get_graph_target(
-                    x1, lang1, data_set, max(graph_info.word_lengths), indices)
+                    x1, graph_info.word_lengths, lang1, data_set, indices)
                 kwargs['oracle_graph'] = graph_target
 
             # encode source sentence

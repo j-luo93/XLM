@@ -1,12 +1,12 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 import torch
 import torch.nn as nn
+from torch_geometric.nn import RGCNConv
 
 from arglib import add_argument, init_g_attr
 from devlib import dataclass_size_repr, get_range, get_zeros
-from torch_geometric.nn import RGCNConv
 
 from .transformer import MultiHeadAttention, TransformerModel
 
@@ -110,6 +110,7 @@ class GraphData:
     edge_index: Tensor
     edge_norm: Tensor
     edge_type: Tensor
+    connected_vertices: List[int] = None
 
     __repr__ = dataclass_size_repr
 
@@ -164,15 +165,19 @@ class Graphormer(TransformerModel):
                                edge_norm=graph_data.edge_norm, edge_type=graph_data.edge_type)
             # Now reshape output for later usage. Note that the length dimension has changed to represent words instead of BPEs.
             bs, wl, _ = assembled_h.shape
+            output[~graph_info.word_mask.view(-1)] = 0.0
             output = output.view(bs, wl, -1)
         elif self.ablation_mode == 'ffn':
             output = self.linear(assembled_h)
+            output[~graph_info.word_mask] = 0.0
         elif self.ablation_mode == 'none':
             output = assembled_h
         else:
             output = assembled_h
             for layer in self.self_attn_layers:
                 output = layer(output, graph_info.word_mask)
+        if graph_data.connected_vertices is not None:
+            output[~graph_data.connected_vertices] = 0.0
 
         output = output.transpose(0, 1)
         if return_graph_data:
@@ -194,10 +199,12 @@ class Graphormer(TransformerModel):
             edge_types:     E x nr
         where V = bs * wl and E = bs * wl * wl.
         """
+        connected_vertices = None
         if oracle_graph is not None:
             type_probs = oracle_graph.edge_type
             norms = oracle_graph.edge_norm
             bs, wl, _ = assembled_h.shape
+            connected_vertices = oracle_graph.connected_vertices
         else:
             bs, wl, _, nr = type_probs.shape
         V = bs * wl
@@ -224,4 +231,4 @@ class Graphormer(TransformerModel):
         else:
             edge_types = type_probs.view(E, nr)
 
-        return GraphData(node_features, edge_index, edge_norms, edge_types)
+        return GraphData(node_features, edge_index, edge_norms, edge_types, connected_vertices)

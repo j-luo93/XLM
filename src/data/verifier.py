@@ -1,15 +1,16 @@
 """
 Verify the boundaries of BPE segments.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, unique
-from typing import List, Tuple
+from typing import List, Set, Tuple
 
 import numpy as np
 import torch
 
 from arglib import add_argument, init_g_attr
-from devlib import get_length_mask, get_range, get_tensor, get_zeros, dataclass_size_repr
+from devlib import (dataclass_size_repr, get_length_mask, get_range,
+                    get_tensor, get_zeros)
 from trainlib import Metric
 
 from ..model.graphormer import GraphData
@@ -45,6 +46,7 @@ class Edge:
 @dataclass
 class Graph:
     edges: List[Edge]
+    connected_vertices: List[int]
 
     def __len__(self):
         return len(self.edges)
@@ -56,15 +58,18 @@ def _read_graphs(path):
         for line in fin:
             segs = line.strip().split()
             edges = list()
+            connected = set()
             for seg in segs:
                 u_idx, v_idx, t = seg.split('-')
                 u_idx, v_idx = map(int, [u_idx, v_idx])
+                connected.add(u_idx)
+                connected.add(v_idx)
                 if t not in {'agent', 'theme'}:
                     t = 'modifier'
                 t = getattr(EdgeType, t.upper())
                 e = Edge(u_idx, v_idx, t)
                 edges.append(e)
-            graphs.append(Graph(edges))
+            graphs.append(Graph(edges, list(connected)))
     return graphs
 
 
@@ -84,19 +89,22 @@ class Verifier:
                     name_split = 'valid' if split == 'dev' else split
                     self.graphs[(lang, name_split)] = _read_graphs(data_path / f'{split}.{lang}.tok.cvtx.neo.txt')
         self.dico = torch.load(data_path / f'valid.{src_lang}.pth')['dico']
-        self.incomplete_bpe = set()
-        incomplete_idx = list()
-        for bpe, idx in self.dico.word2id.items():
-            if bpe.endswith('@@'):
-                self.incomplete_bpe.add(bpe)
-                incomplete_idx.append(idx)
-        idx = get_zeros(len(self.dico)).bool()
-        idx[incomplete_idx] = True
-        self.incomplete_idx = idx
+
+        self.incomplete_bpe = {lang: set() for lang in [src_lang, tgt_lang]}
+        self.incomplete_idx = dict()
+        for lang in [src_lang, tgt_lang]:
+            incomplete_idx = list()
+            for bpe, idx in self.dico.word2id.items():
+                if bpe.endswith('@@'):
+                    self.incomplete_bpe[lang].add(bpe)
+                    incomplete_idx.append(idx)
+            idx = get_zeros(len(self.dico)).bool()
+            idx[incomplete_idx] = True
+            self.incomplete_idx[lang] = idx
 
         self.ae_noise_graph_mode = ae_noise_graph_mode
 
-    def get_graph_info(self, data) -> GraphInfo:
+    def get_graph_info(self, data, lang: str) -> GraphInfo:
         """
         bpe_mask is the mask that marks the boundaries the words.
         word_mask is the mask that marks whether or not a position is padded.
@@ -107,7 +115,8 @@ class Verifier:
 
         data_off_by_one = torch.cat([get_zeros(bs, 1).long(), data[:, :-1]], dim=1)
         # A new word is started if the previous bpe is complete and it's not a padding or <s>.
-        new_word = ~self.incomplete_idx[data_off_by_one] & (data != self.dico.pad_index) & (data != self.dico.bos_index)
+        new_word = ~self.incomplete_idx[lang][data_off_by_one] & (
+            data != self.dico.pad_index) & (data != self.dico.bos_index)
         # Form distinct word ids by counting how many new words are formed up to now.
         word_ids = new_word.long().cumsum(dim=1)
         # bpe_mask: value is set to True iff both bpes belong to the same word.
@@ -130,13 +139,14 @@ class Verifier:
     def get_graph_target(
             self,
             data: Tensor,
+            lengths: Tensor,
             lang: str,
             split: str,
-            max_len: int,
             indices: List[int],
             permutations: List[np.ndarray] = None,
             keep: np.ndarray = None) -> GraphData:
         # NOTE(j_luo)  If for some reason the first one is <s> or </s>, we need to offset the indices.
+        max_len = max(lengths)
         if self.ae_noise_graph_mode == 'change':
             assert permutations is not None and keep is not None
 
@@ -148,9 +158,18 @@ class Verifier:
             raise RuntimeError('Something is terribly wrong.')
 
         ijkv = list()
+        connected_vertices = get_zeros(len(graphs), max_len).bool()
         for batch_i, graph in enumerate(graphs):
             assert len(graph) <= max_len
             offset = offsets[batch_i].item()
+
+            assert self.ae_noise_graph_mode != 'change', 'connected vertices cannot handle change for now.'
+            vertices = np.asarray(graph.connected_vertices) + offset
+            connected_vertices[batch_i, vertices] = True
+            if offset > 0:
+                connected_vertices[batch_i, 0] = True
+            length = lengths[batch_i].item() - 1
+            connected_vertices[batch_i, length] = True
             # Repeat the permutation and dropout processes and change the graph accordingly.
             if self.ae_noise_graph_mode == 'change':
                 perm = permutations[batch_i].argsort()
@@ -171,24 +190,22 @@ class Verifier:
         edge_norm = get_zeros([bs, max_len, max_len])
         edge_type = get_zeros([bs, max_len, max_len]).long()
         # NOTE(j_luo) Edges are symmetric.
-        if max(j) >= max_len or max(k) >= max_len:
-            1/0
         edge_norm[i, j, k] = 1.0
         edge_norm[i, k, j] = 1.0
         edge_type[i, j, k] = v
         edge_type[i, k, j] = v
         edge_norm = edge_norm.view(-1)
         edge_type = edge_type.view(-1)
-        return GraphData(None, None, edge_norm, edge_type)
+        return GraphData(None, None, edge_norm, edge_type, connected_vertices)
 
     def get_graph_loss(self, graph_data: GraphData, graph_target: GraphData, lang: str) -> Tuple[Metric, Metric]:
         """
-            Sizes for graph_data and graph_target:
-                                graph_data      graph_target
-                edge_norm:      E               E
-                edge_type:      E x nr          E
-            where E = bs x wl x wl.
-            """
+        Sizes for graph_data and graph_target:
+                            graph_data      graph_target
+            edge_norm:      E               E
+            edge_type:      E x nr          E
+        where E = bs x wl x wl.
+        """
         # NOTE(j_luo) This determines whether it's an actual edge (in contrast to a padded edge) or not.
         assert len(graph_data.edge_norm) == len(graph_target.edge_norm)
         assert len(graph_data.edge_type) == len(graph_target.edge_type)
