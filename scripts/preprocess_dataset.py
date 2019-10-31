@@ -2,6 +2,7 @@
 Largely based on get-data-nmt.sh
 '''
 
+from trainlib import set_random_seeds
 import random
 from collections import namedtuple
 from enum import Enum
@@ -14,7 +15,6 @@ from devlib.preprocess.format_file import FormatFile
 from devlib.preprocess.pipeline import Pipeline
 
 MAIN_DIR = Path('/scratch/j_luo/eat-nmt/XLM/')
-DATA_DIR = Path('/scratch/j_luo/data/multi30k/')
 TOOLS_DIR = Path('/scratch/j_luo/eat-nmt/XLM/tools/')
 MULTI30K_DOMAIN_URL = 'https://github.com/multi30k/dataset/blob/master/data/task1/raw/'
 MOSES_DIR = TOOLS_DIR / 'mosesdecoder'
@@ -55,17 +55,22 @@ test_sets = {
 Key = namedtuple('Key', ['main', 'lang'])
 
 if __name__ == "__main__":
-    initiate(logger=True, gpus=True)
+    initiate(logger=True, gpus=True, commit_id=True, random_seed=True)
 
     add_argument('langs', dtype=str, nargs=2)
     add_argument('codes', dtype=str)
     add_argument('seed', dtype=int, default=1234)
     add_argument('split_lines', dtype=int, nargs=2)
     add_argument('eat', dtype=str, default='', choices=['', 'eat', 'neo'])
-    parse_args()
+    add_argument('dataset', dtype=str, default='multi30k', choices=['multi30k', 'iwslt'])
+    add_argument('pair', dtype=str, default='')
+    parse_args(show=True)
 
     # Use random seed to make sure train split is persistent.
     random.seed(g.seed)
+
+    # Set data directory.
+    data_dir = Path(f'/scratch/j_luo/data/{g.dataset}/')
 
     # Set constant for the actions.
     set_action_constant('MOSES_DIR', MOSES_DIR)
@@ -77,10 +82,11 @@ if __name__ == "__main__":
 
     # Get the language pair.
     lang1, lang2 = sorted(g.langs)
-    pair = f'{lang1}-{lang2}'
+    sorted_pair = f'{lang1}-{lang2}'
+    pair = sorted_pair if g.pair == '' else g.pair
 
     # Get the folders.
-    out_dir = DATA_DIR / f'{pair}'
+    out_dir = data_dir / f'{pair}'
     raw_dir = out_dir / 'raw'
     processed_dir = out_dir / 'processed'
 
@@ -88,42 +94,68 @@ if __name__ == "__main__":
     #                                   Main body                                  #
     # ---------------------------------------------------------------------------- #
 
-    # For test set, we need to figure out what to download.
-    test_to_download = [f'test_{dataset.value}' for dataset in test_sets[lang1] & test_sets[lang2]]
+    if g.dataset == 'multi30k':
+        # For test set, we need to figure out what to download.
+        test_to_download = [f'test_{dataset.value}' for dataset in test_sets[lang1] & test_sets[lang2]]
 
-    # Get all urls.
-    urls = dict()
-    for lang in g.langs:
-        urls[Key('train', lang)] = f'{MULTI30K_DOMAIN_URL}/train.{lang}.gz?raw=true'
-        urls[Key('dev', lang)] = f'{MULTI30K_DOMAIN_URL}/val.{lang}.gz?raw=true'
-        for name in test_to_download:
-            urls[Key(name, lang)] = f'{MULTI30K_DOMAIN_URL}/{name}.{lang}.gz?raw=true'
+        # Get all urls.
+        urls = dict()
+        for lang in g.langs:
+            urls[Key('train', lang)] = f'{MULTI30K_DOMAIN_URL}/train.{lang}.gz?raw=true'
+            urls[Key('dev', lang)] = f'{MULTI30K_DOMAIN_URL}/val.{lang}.gz?raw=true'
+            for name in test_to_download:
+                urls[Key(name, lang)] = f'{MULTI30K_DOMAIN_URL}/{name}.{lang}.gz?raw=true'
+        # Download everything.
+        pipeline = Pipeline(urls)
+        pipeline.download(folder=raw_dir, pair=pair, ext='gz')
 
-    # Download everything.
-    pipeline = Pipeline(urls)
-    pipeline.download(folder=raw_dir, pair=pair, ext='gz')
+        # Decompress everything.
+        pipeline.decompress()
 
-    # Merge all test sets.
-    for lang in g.langs:
-        merge_to = FormatFile(raw_dir, 'test', lang, 'gz', pair=pair)
-        merge_to_key = Key('test', lang)
-        to_merge_keys = [Key(name, lang) for name in test_to_download]
-        pipeline.merge(to_merge_keys, merge_to_key, merge_to)
+        # Take two non-overlapping subsets from training.
+        num_lines = sum(g.split_lines)
+        indices = list(range(num_lines))
+        random.shuffle(indices)
+        indices1 = indices[:g.split_lines[0]]
+        indices2 = indices[g.split_lines[0]:num_lines]
+        line_ids = [indices1, indices2]
+        key1 = Key('train', lang1)
+        key2 = Key('train', lang2)
+        pipeline.split(key1, line_ids, 0)
+        pipeline.split(key2, line_ids, 1)
 
-    # Decompress everything.
-    pipeline.decompress()
+    else:
+        dataset_names = {
+            'dev': ['dev2010', 'tst2010', 'tst2011'],
+            'test': ['tst2012', 'tst2013', 'tst2014']
+        }
+        # Get all sources.
+        sources = dict()
+        for lang in g.langs:
+            key = Key('train', lang)
+            source = FormatFile(raw_dir, f'train', lang, 'txt', pair=pair, compat_main=f'train.{pair}.{lang}')
+            sources[key] = source
+        for lang in g.langs:
+            for split, names in dataset_names.items():
+                for name in names:
+                    key = Key(name, lang)
+                    source = FormatFile(raw_dir, name, lang, 'txt', pair=pair,
+                                        compat_main=f'IWSLT16.TED.{name}.{pair}.{lang}')
+                    sources[key] = source
+        pipeline = Pipeline(sources)
 
-    # Take two non-overlapping subsets from training.
-    num_lines = sum(g.split_lines)
-    indices = list(range(num_lines))
-    random.shuffle(indices)
-    indices1 = indices[:g.split_lines[0]]
-    indices2 = indices[g.split_lines[0]:num_lines]
-    line_ids = [indices1, indices2]
-    key1 = Key('train', lang1)
-    key2 = Key('train', lang2)
-    pipeline.split(key1, line_ids, 0)
-    pipeline.split(key2, line_ids, 1)
+        # Merge all dev sets and test sets.
+        for lang in g.langs:
+            for split in ['dev', 'test']:
+                merge_to = FormatFile(raw_dir, split, lang, 'txt', pair=pair)
+                merge_to_key = Key(split, lang)
+                to_merge_keys = [Key(name, lang) for name in dataset_names[split]]
+                pipeline.merge(to_merge_keys, merge_to_key, merge_to)
+
+        # Take two non-overlapping subsets from training.
+        key1 = Key('train', lang1)
+        key2 = Key('train', lang2)
+        pipeline.split_n_parts([key1, key2], 2, [0, 1])
 
     # Now training sets are not parallel.
     link1 = pipeline.sources[key1].remove_pair().remove_part()
@@ -139,7 +171,7 @@ if __name__ == "__main__":
         # Save conll-related files here.
         pipeline.parse(folder=out_dir / 'conll')
         pipeline.collapse()
-        eat_dir = out_dir / f'processed-{g.eat}' 
+        eat_dir = out_dir / f'processed-{g.eat}'
         if g.eat == 'eat':
             pipeline.convert_eat(folder=eat_dir)
         else:
@@ -169,3 +201,7 @@ if __name__ == "__main__":
             if split != 'train':
                 para_link = FormatFile(folder, main, lang, 'pth', pair=pair)
                 pipeline.link(src_key, para_link)
+
+                if g.pair != '' and g.pair != sorted_pair:
+                    para_link = FormatFile(folder, main, lang, 'pth', pair=sorted_pair)
+                    pipeline.link(src_key, para_link)

@@ -37,13 +37,14 @@ class ParamsFromXLM:
         cls = type(self)
         src = cls.SRC_LANG
         tgt = cls.TGT_LANG
+        data_id = cls.DATA_ID
         self.ae_steps = f'{src},{tgt}'
         self.bt_steps = f'{src}-{tgt}-{src},{tgt}-{src}-{tgt}'
         self.lgs = f'{src}-{tgt}'
         self.stopping_criterion = f'valid_{src}-{tgt}_mt_bleu,10'
         self.validation_metrics = f'valid_{src}-{tgt}_mt_bleu'
         self.data_path = Path(f"./data/processed/{src}-{tgt}/")
-        self.exp_name = f"unsupMT_{src}{tgt}"
+        self.exp_name = f"unsupMT_{data_id}_{src}{tgt}"
 
 
 @dataclass
@@ -67,6 +68,9 @@ class DeEnBase(SingleGpuParams):
 
 @reg
 class DeEnMulti30KBaseline(DeEnBase):
+    DATASET = 'multi30k'
+    DATA_ID = 'multi30k'
+    FOLDER = 'processed'
 
     eval_interval: int = 100
     old_data_paths: Tuple[str] = ('data/processed/de-en/valid.de.pth', 'data/processed/de-en/valid.en.pth')
@@ -76,8 +80,15 @@ class DeEnMulti30KBaseline(DeEnBase):
         cls = type(self)
         src = cls.SRC_LANG
         tgt = cls.TGT_LANG
-        self.data_path = f'./data/multi30k/{src}-{tgt}/processed'
-        self.exp_name = f'unsupMT_multi30K_{src}{tgt}'
+        self.data_path = f'./data/{cls.DATASET}/{src}-{tgt}/{cls.FOLDER}'
+        self.exp_name = f'unsupMT_{cls.DATA_ID}_{src}{tgt}'
+
+
+@reg
+class DeEnIwsltBaseline(DeEnMulti30KBaseline):
+    DATASET = 'iwslt'
+    DATA_ID = 'iwslt'
+    eval_interval: int = 500
 
 
 @reg
@@ -104,29 +115,38 @@ class DeEnMulti30KBaselineNoBt(DeEnMulti30KBaseline):
 
 
 @reg
-class DeEnMulti30KEatNoBt(DeEnMulti30KBaselineNoBt):
+class DeEnIwsltBaselineNoBt(DeEnMulti30KBaselineNoBt):
+    DATASET = 'iwslt'
+    DATA_ID = 'iwslt'
+    eval_interval: int = 500
 
-    def __post_init__(self):
-        super().__post_init__()
-        cls = type(self)
-        src = cls.SRC_LANG
-        tgt = cls.TGT_LANG
-        self.data_path = f"./data/multi30k/{src}-{tgt}/processed-eat"
-        self.exp_name = f"unsupMT_multi30K_EAT_{src}{tgt}"
+
+@reg
+class DeEnMulti30KEatNoBt(DeEnMulti30KBaselineNoBt):
+    DATA_ID = 'multi30k_EAT'
+    FOLDER = 'processed-eat'
+
+
+@reg
+class DeEnIwsltEatNoBt(DeEnMulti30KEatNoBt):
+    DATASET = 'iwslt'
+    DATA_ID = 'iwslt_EAT'
+    eval_interval: int = 500
 
 
 @reg
 class DeEnMulti30KNeoNoBt(DeEnMulti30KBaselineNoBt):
+    DATA_ID = 'multi30k_neo'
+    FOLDER = 'processed-neo'
 
     use_graph: bool = True
 
-    def __post_init__(self):
-        super().__post_init__()
-        cls = type(self)
-        src = cls.SRC_LANG
-        tgt = cls.TGT_LANG
-        self.data_path = f"./data/multi30k/{src}-{tgt}/processed-neo"
-        self.exp_name = f"unsupMT_multi30K_neo_{src}{tgt}"
+
+@reg
+class DeEnIwsltNeoNoBt(DeEnMulti30KNeoNoBt):
+    DATASET = 'iwslt'
+    DATA_ID = 'iwslt_neo'
+    eval_interval: int = 500
 
 
 @reg(aliases=['DeEnMulti30KNeoBest'])

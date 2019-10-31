@@ -188,7 +188,10 @@ def build_model(params, dico):
                     if w == '<EMPTY>':
                         old_i = old.unk_index
                     else:
-                        old_i = old.word2id[w]
+                        try:
+                            old_i = old.word2id[w]
+                        except KeyError:
+                            old_i = old.unk_index
                     idx.append(old_i)
                 old_state[name] = old_w[idx]
 
