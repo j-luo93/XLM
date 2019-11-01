@@ -9,7 +9,6 @@ import json
 import random
 
 from arglib import add_argument, add_registry, parse_args
-from devlib.named_tensor import patch_named_tensors
 from src.data.loader import check_data_params, load_data
 from src.evaluation.evaluator import EncDecEvaluator, SingleEvaluator
 from src.model import build_model, check_model_params
@@ -314,7 +313,6 @@ def main(params):
 
 
 if __name__ == '__main__':
-    patch_named_tensors()
 
     # generate parser / parse parameters
     add_main_arguments()
