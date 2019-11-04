@@ -208,9 +208,10 @@ def load_para_data(params, data):
                 dataset.remove_empty_sentences()
                 dataset.remove_long_sentences(params.max_len)
 
-            # for validation and test set, enumerate sentence per sentence
+            # for validation and test set (when not using graph), enumerate sentence per sentence
             if splt != 'train':
-                dataset.tokens_per_batch = -1
+                if not params.use_graph:
+                    dataset.tokens_per_batch = -1
 
             # if there are several processes on the same machine, we can split the dataset
             if splt == 'train' and params.n_gpu_per_node > 1 and params.split_data:
