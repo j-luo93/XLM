@@ -160,7 +160,6 @@ class Verifier:
         ijkv = list()
         connected_vertices = get_zeros(len(graphs), max_len).bool()
         for batch_i, graph in enumerate(graphs):
-            assert len(graph) <= max_len
             offset = offsets[batch_i].item()
 
             assert self.ae_noise_graph_mode != 'change', 'connected vertices cannot handle change for now.'
@@ -170,6 +169,7 @@ class Verifier:
                 connected_vertices[batch_i, 0] = True
             length = lengths[batch_i].item() - 1
             connected_vertices[batch_i, length] = True
+
             # Repeat the permutation and dropout processes and change the graph accordingly.
             if self.ae_noise_graph_mode == 'change':
                 perm = permutations[batch_i].argsort()
@@ -177,6 +177,7 @@ class Verifier:
             for e in graph.edges:
                 u = e.u + offset
                 v = e.v + offset
+                assert u < max_len and v < max_len
                 if self.ae_noise_graph_mode == 'change':
                     u = perm[e.u]
                     v = perm[e.v]

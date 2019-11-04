@@ -5,16 +5,18 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-from logging import getLogger
-import math
 import itertools
+import math
+from logging import getLogger
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .memory import HashingMemory
+from arglib import add_argument
 
+from .memory import HashingMemory
 
 N_MAX_POSITIONS = 512  # maximum input sequence length
 
@@ -245,6 +247,9 @@ class TransformerModel(nn.Module):
     ATTRIBUTES = ['encoder', 'with_output', 'eos_index', 'pad_index', 'n_langs', 'n_words', 'dim', 'n_layers',
                   'n_heads', 'hidden_dim', 'dropout', 'attention_dropout', 'asm', 'asm_cutoffs', 'asm_div_value']
 
+    add_argument('use_positional_embedding', default=True, dtype=bool,
+                 msg='whether to use positional embedding or not.')
+
     def __init__(self, params, dico, is_encoder, with_output):
         """
         Transformer model (encoder or decoder).
@@ -323,6 +328,8 @@ class TransformerModel(nn.Module):
             if params.share_inout_emb:
                 self.pred_layer.proj.weight = self.embeddings.weight
 
+        self.use_positional_embedding = params.use_positional_embedding
+
     def forward(self, mode, **kwargs):
         """
         Forward function with different forward modes.
@@ -387,7 +394,8 @@ class TransformerModel(nn.Module):
 
         # embeddings
         tensor = self.embeddings(x)
-        tensor = tensor + self.position_embeddings(positions).expand_as(tensor)
+        if self.use_positional_embedding:
+            tensor = tensor + self.position_embeddings(positions).expand_as(tensor)
         if langs is not None and self.use_lang_emb:
             tensor = tensor + self.lang_embeddings(langs)
         tensor = self.layer_norm_emb(tensor)

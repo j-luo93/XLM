@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 #
 
+from arglib import not_supported_argument_value
 from logging import getLogger
 import math
 import numpy as np
@@ -99,6 +100,9 @@ class Dataset(object):
         # sanity checks
         self.check()
 
+        # `orig_indices` stores what the original indices are. After removing long and empty sentences, the indices are changed accordingly.
+        self.orig_indices = np.arange(len(pos))
+
     def __len__(self):
         """
         Number of sentences in the dataset.
@@ -137,10 +141,12 @@ class Dataset(object):
         """
         init_size = len(self.pos)
         indices = np.arange(len(self.pos))
-        indices = indices[self.lengths[indices] > 0]
+        to_keep = self.lengths[indices] > 0
+        indices = indices[to_keep]
         self.pos = self.pos[indices]
         self.lengths = self.pos[:, 1] - self.pos[:, 0]
         logger.info("Removed %i empty sentences." % (init_size - len(indices)))
+        self.orig_indices = self.orig_indices[to_keep]
         self.check()
 
     def remove_long_sentences(self, max_len):
@@ -152,12 +158,15 @@ class Dataset(object):
             return
         init_size = len(self.pos)
         indices = np.arange(len(self.pos))
-        indices = indices[self.lengths[indices] <= max_len]
+        to_keep = self.lengths[indices] <= max_len
+        indices = indices[to_keep]
         self.pos = self.pos[indices]
         self.lengths = self.pos[:, 1] - self.pos[:, 0]
         logger.info("Removed %i too long sentences." % (init_size - len(indices)))
+        self.orig_indices = self.orig_indices[to_keep]
         self.check()
 
+    @not_supported_argument_value('use_graph', True)
     def select_data(self, a, b):
         """
         Only select a subset of the dataset.
@@ -261,6 +270,9 @@ class ParallelDataset(Dataset):
         assert len(self.pos1) == (self.sent1 == self.eos_index).sum()
         assert len(self.pos2) == (self.sent2 == self.eos_index).sum()
 
+        # `orig_indices` stores what the original indices are. After removing long and empty sentences, the indices are changed accordingly.
+        self.orig_indices = np.arange(len(pos1))
+
         # remove empty sentences
         self.remove_empty_sentences()
 
@@ -292,8 +304,12 @@ class ParallelDataset(Dataset):
         """
         init_size = len(self.pos1)
         indices = np.arange(len(self.pos1))
-        indices = indices[self.lengths1[indices] > 0]
-        indices = indices[self.lengths2[indices] > 0]
+        to_keep1 = self.lengths1[indices] > 0
+        indices = indices[to_keep1]
+        self.orig_indices = self.orig_indices[to_keep1]
+        to_keep2 = self.lengths2[indices] > 0
+        indices = indices[to_keep2]
+        self.orig_indices = self.orig_indices[to_keep2]
         self.pos1 = self.pos1[indices]
         self.pos2 = self.pos2[indices]
         self.lengths1 = self.pos1[:, 1] - self.pos1[:, 0]
@@ -310,8 +326,12 @@ class ParallelDataset(Dataset):
             return
         init_size = len(self.pos1)
         indices = np.arange(len(self.pos1))
-        indices = indices[self.lengths1[indices] <= max_len]
-        indices = indices[self.lengths2[indices] <= max_len]
+        to_keep1 = self.lengths1[indices] <= max_len
+        indices = indices[to_keep1]
+        self.orig_indices = self.orig_indices[to_keep1]
+        to_keep2 = self.lengths2[indices] <= max_len
+        indices = indices[to_keep2]
+        self.orig_indices = self.orig_indices[to_keep2]
         self.pos1 = self.pos1[indices]
         self.pos2 = self.pos2[indices]
         self.lengths1 = self.pos1[:, 1] - self.pos1[:, 0]
@@ -319,6 +339,7 @@ class ParallelDataset(Dataset):
         logger.info("Removed %i too long sentences." % (init_size - len(indices)))
         self.check()
 
+    @not_supported_argument_value('use_graph', True)
     def select_data(self, a, b):
         """
         Only select a subset of the dataset.

@@ -121,12 +121,14 @@ class Graphormer(TransformerModel):
                  msg='ablation mode. full means full model, ffn replaces rgcn with ffn, and none means using assembler only.')
     add_argument("self_attn_layers", default=0, dtype=int, msg='number of layers for self attention layers.')
     add_argument('num_relations', default=5, dtype=int, msg='number of distinct edge types.')
+    add_argument('mask_unconnected_vertices', default=False, dtype=bool, msg='flag to mask unconnected vertices.')
 
     def __init__(self, params, dico, is_encoder, with_output):
         super().__init__(params, dico, is_encoder, with_output)
         self.assembler = Assembler()
         self.ablation_mode = params.ablation_mode
         self.num_relations = params.num_relations
+        self.mask_unconnected_vertices = params.mask_unconnected_vertices
 
         if self.ablation_mode == 'full':
             self.graph_predictor = GraphPredictor()
@@ -176,7 +178,7 @@ class Graphormer(TransformerModel):
             output = assembled_h
             for layer in self.self_attn_layers:
                 output = layer(output, graph_info.word_mask)
-        if graph_data.connected_vertices is not None:
+        if self.mask_unconnected_vertices and graph_data.connected_vertices is not None:
             output[~graph_data.connected_vertices] = 0.0
 
         output = output.transpose(0, 1)

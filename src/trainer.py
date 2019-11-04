@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 #
 
+import random
 import math
 import os
 import time
@@ -40,6 +41,7 @@ class Trainer:
     add_argument('supervised_graph', dtype=str, default='', msg='supervise the process of graph induction')
     add_argument('oracle_graph', dtype=bool, default=False, msg='flag to use oracle graph')
     add_argument('lambda_graph', dtype=float, default=0.0, msg='hyperparameter for graph induction loss')
+    add_argument('full_permutation', dtype=float, default=0.0, msg='probability to do a full permutation')
 
     def __init__(self, data, params, use_graph: 'p'):
         """
@@ -321,10 +323,12 @@ class Trainer:
         assert stream or not self.params.use_memory or not self.params.mem_query_batchnorm
         if lang2 is None:
             if stream:
-                iterator = self.data['mono_stream'][lang1]['train'].get_iterator(
+                dataset = self.data['mono_stream'][lang1]['train']
+                iterator = dataset.get_iterator(
                     shuffle=True, return_indices=return_indices)
             else:
-                iterator = self.data['mono'][lang1]['train'].get_iterator(
+                dataset = self.data['mono'][lang1]['train']
+                iterator = dataset.get_iterator(
                     shuffle=True,
                     group_by_size=self.params.group_by_size,
                     n_sentences=-1,
@@ -333,15 +337,16 @@ class Trainer:
         else:
             assert stream is False
             _lang1, _lang2 = (lang1, lang2) if lang1 < lang2 else (lang2, lang1)
-            iterator = self.data['para'][(_lang1, _lang2)]['train'].get_iterator(
+            dataset = self.data['para'][(_lang1, _lang2)]['train']
+            iterator = dataset.get_iterator(
                 shuffle=True,
                 group_by_size=self.params.group_by_size,
                 n_sentences=-1,
                 return_indices=return_indices
             )
 
-        self.iterators[(iter_name, lang1, lang2)] = iterator
-        return iterator
+        self.iterators[(iter_name, lang1, lang2)] = iterator, dataset
+        return iterator, dataset
 
     def get_batch(self, iter_name, lang1, lang2=None, stream=False, input_format='plain', return_indices=False):
         """
@@ -350,13 +355,13 @@ class Trainer:
         assert lang1 in self.params.langs
         assert lang2 is None or lang2 in self.params.langs
         assert stream is False or lang2 is None
-        iterator = self.iterators.get((iter_name, lang1, lang2), None)
+        iterator, dataset = self.iterators.get((iter_name, lang1, lang2), (None, None))
         if iterator is None:
-            iterator = self.get_iterator(iter_name, lang1, lang2, stream, return_indices=return_indices)
+            iterator, dataset = self.get_iterator(iter_name, lang1, lang2, stream, return_indices=return_indices)
         try:
             x = next(iterator)
         except StopIteration:
-            iterator = self.get_iterator(iter_name, lang1, lang2, stream, return_indices=return_indices)
+            iterator, dataset = self.get_iterator(iter_name, lang1, lang2, stream, return_indices=return_indices)
             x = next(iterator)
         if lang2 is None or lang1 < lang2:
             if return_indices:
@@ -370,7 +375,7 @@ class Trainer:
                 unpacked = data[sl // 9, 9, bs]
                 data = unpacked[:, :3].view(-1, bs)
                 lengths = lengths // 3
-            return (data, lengths, indices) if return_indices else (data, lengths)
+            return (data, lengths, indices, dataset) if return_indices else (data, lengths)
         else:
             # HACK(j_luo)
             assert not return_indices
@@ -391,9 +396,15 @@ class Trainer:
         x2 = x.clone()
         permutations = list()
         for i in range(l.size(0)):
-            # generate a random permutation
-            scores = np.arange(l[i] - 1) + noise[:l[i] - 1, i]
-            permutation = scores.argsort()
+            if self.params.full_permutation > 0.0:
+                permutation = np.arange(1, l[i] - 1)
+                if random.random() < self.params.full_permutation:
+                    np.random.shuffle(permutation)
+                permutation = np.concatenate([np.zeros([1], dtype='int'), permutation], axis=0)
+            else:
+                # generate a random permutation
+                scores = np.arange(l[i] - 1) + noise[:l[i] - 1, i]
+                permutation = scores.argsort()
             permutations.append(permutation)
             # shuffle words
             x2[:l[i] - 1, i].copy_(x2[:l[i] - 1, i][torch.from_numpy(permutation)])
@@ -976,8 +987,10 @@ class EncDecTrainer(Trainer):
         kwargs = {'x': x1, 'lengths': len1, 'langs': langs1, 'causal': False,
                   'graph_info': graph_info, 'use_graph_loss': use_graph_loss}
         if use_graph_loss:  # NOTE(j_luo) Return graph data for supervising graph induction.
-            assert len(indices) == 1
-            indices = indices[0]
+            assert len(indices) == 2
+            indices, dataset = indices
+            indices = dataset.orig_indices[indices]
+
         graph_data = None
         graph_target = None
         if use_graph_loss:

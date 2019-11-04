@@ -169,6 +169,13 @@ class DeEnMulti30KNeoOracle(DeEnMulti30KNeoBest):
 
 
 @reg
+class DeEnIwsltNeoOracle(DeEnMulti30KNeoOracle):
+    DATASET = 'iwslt'
+    DATA_ID = 'iwslt_neo'
+    eval_interval: int = 500
+
+
+@reg
 class DeEnMulti30KNeoNoAE(DeEnMulti30KNeoBest):
 
     def __post_init__(self):
