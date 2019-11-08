@@ -63,6 +63,7 @@ if __name__ == "__main__":
     add_argument('split_lines', dtype=int, nargs=2)
     add_argument('eat', dtype=str, default='', choices=['', 'eat', 'neo'])
     add_argument('dataset', dtype=str, default='multi30k', choices=['multi30k', 'iwslt'])
+    add_argument('linear', dtype=bool, default=False)
     add_argument('pair', dtype=str, default='')
     parse_args(show=True)
 
@@ -171,11 +172,14 @@ if __name__ == "__main__":
         # Save conll-related files here.
         pipeline.parse(folder=out_dir / 'conll')
         pipeline.collapse()
-        eat_dir = out_dir / f'processed-{g.eat}'
+        subfolder = f'processed-{g.eat}'
+        if g.linear:
+            subfolder += '-linear'
+        eat_dir = out_dir / subfolder
         if g.eat == 'eat':
             pipeline.convert_eat(folder=eat_dir)
         else:
-            pipeline.convert_neo(folder=eat_dir)
+            pipeline.convert_neo(linear=g.linear, folder=eat_dir)
         # After conversion, some texts are missing due to empty EAT sequence.
         for split in ['dev', 'test']:
             pipeline.align(Key(split, lang1), Key(split, lang2), op=g.eat)

@@ -135,6 +135,13 @@ class DeEnIwsltEatNoBt(DeEnMulti30KEatNoBt):
 
 
 @reg
+class DeEnIwsltNeoLinearNoBt(DeEnIwsltEatNoBt):
+    DATASET = 'iwslt'
+    DATA_ID = 'iwslt_neo_linear'
+    FOLDER = 'processed-neo-linear'
+
+
+@reg
 class DeEnMulti30KNeoNoBt(DeEnMulti30KBaselineNoBt):
     DATA_ID = 'multi30k_neo'
     FOLDER = 'processed-neo'
