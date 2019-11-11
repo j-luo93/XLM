@@ -49,7 +49,7 @@ class ParamsFromXLM:
 
 @dataclass
 class SingleGpuParams(ParamsFromXLM):
-    tokens_per_batch: int = 1000
+    tokens_per_batch: int = 800
 
 
 @reg
