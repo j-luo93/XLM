@@ -5,14 +5,15 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-from logging import getLogger
 import os
+from logging import getLogger
+from pathlib import Path
+
 import numpy as np
 import torch
 
-from .dataset import StreamDataset, Dataset, ParallelDataset
-from .dictionary import BOS_WORD, EOS_WORD, PAD_WORD, UNK_WORD, MASK_WORD
-
+from .dataset import Dataset, ParallelDataset, StreamDataset
+from .dictionary import BOS_WORD, EOS_WORD, MASK_WORD, PAD_WORD, UNK_WORD
 
 logger = getLogger()
 
@@ -55,19 +56,30 @@ def load_binarized(path, params):
     """
     Load a binarized dataset.
     """
-    assert path.endswith('.pth')
-    if params.debug_train:
-        path = path.replace('train', 'valid')
-    if getattr(params, 'multi_gpu', False):
-        split_path = '%s.%i.pth' % (path[:-4], params.local_rank)
-        if os.path.isfile(split_path):
-            assert params.split_data is False
-            path = split_path
-    assert os.path.isfile(path), path
-    logger.info("Loading data from %s ..." % path)
-    data = torch.load(path)
-    data = process_binarized(data, params)
-    return data
+    def load_helper(path, params):
+        assert path.suffix == '.pth'
+        if params.debug_train:
+            path = path.replace('train', 'valid')
+        if getattr(params, 'multi_gpu', False):
+            split_path = '%s.%i.pth' % (path[:-4], params.local_rank)
+            if os.path.isfile(split_path):
+                assert params.split_data is False
+                path = split_path
+        assert path.exists()
+        logger.info("Loading data from %s ..." % path)
+        data = torch.load(path)
+        data = process_binarized(data, params)
+        return data
+
+    if isinstance(path, (Path, str)):
+        data = load_helper(path, params)
+        return data
+    else:
+        assert isinstance(path, tuple) and len(path) == 2
+        eat_path, path = path
+        eat_data = load_helper(eat_path, params)
+        data = load_helper(path, params)
+        return (eat_data, data)
 
 
 def set_dico_parameters(params, data, dico):
@@ -124,6 +136,8 @@ def load_mono_data(params, data):
 
             # load data / update dictionary parameters / update data
             mono_data = load_binarized(params.mono_dataset[lang][splt], params)
+            if params.input_format != 'plain':
+                mono_eat_data, mono_data = mono_data
             set_dico_parameters(params, data, mono_data['dico'])
 
             # create stream dataset
@@ -141,7 +155,16 @@ def load_mono_data(params, data):
             if lang in params.ae_steps or lang in params.bt_src_langs:
 
                 # create batched dataset
-                dataset = Dataset(mono_data['sentences'], mono_data['positions'], params)
+                if params.input_format == 'plain':
+                    dataset = Dataset(mono_data['sentences'], mono_data['positions'], params)
+                else:
+                    dataset = ParallelDataset(
+                        mono_eat_data['sentences'],
+                        mono_eat_data['positions'],
+                        mono_data['sentences'],
+                        mono_data['positions'],
+                        params
+                    )
 
                 # remove empty and too long sentences
                 if splt == 'train':
@@ -289,38 +312,50 @@ def check_data_params(params):
     # check monolingual datasets
     required_mono = set([l1 for l1, l2 in (params.mlm_steps + params.clm_steps)
                          if l2 is None] + params.ae_steps + params.bt_src_langs)
-    params.mono_dataset = {
-        lang: {
-            splt: os.path.join(params.data_path, '%s.%s.pth' % (splt, lang))
-            for splt in ['train', 'valid', 'test']
-        } for lang in params.langs if lang in required_mono
-    }
-    for paths in params.mono_dataset.values():
-        for p in paths.values():
-            if not os.path.isfile(p):
-                logger.error(f"{p} not found")
-    assert all([all([os.path.isfile(p) for p in paths.values()]) for paths in params.mono_dataset.values()])
+    mono_dataset = dict()
+
+    def check_exists(path: Path):
+        if not path.exists():
+            raise FileNotFoundError(f'File {path} not found.')
+
+    for lang in params.langs:
+        if lang in required_mono:
+            lang_dataset = dict()
+            for splt in ['train', 'valid', 'test']:
+                path = params.data_path / f'{splt}.{lang}.pth'
+                check_exists(path)
+
+                if params.input_format != 'plain':
+                    infix = params.input_format.rstrip('_linear')
+                    eat_path = params.data_path / f'{splt}.{lang}.{infix}.pth'
+                    check_exists(eat_path)
+                    lang_dataset[splt] = (eat_path, path)
+                else:
+                    lang_dataset[splt] = path
+
+            mono_dataset[lang] = lang_dataset
+    params.mono_dataset = mono_dataset
 
     # check parallel datasets
     required_para_train = set(params.clm_steps + params.mlm_steps + params.pc_steps + params.mt_steps)
     required_para = required_para_train | set([(l2, l3) for _, l2, l3 in params.bt_steps]) | set(params.eval_mt_steps)
-    params.para_dataset = {
-        (src, tgt): {
-            splt: (os.path.join(params.data_path, '%s.%s-%s.%s.pth' % (splt, src, tgt, src)),
-                   os.path.join(params.data_path, '%s.%s-%s.%s.pth' % (splt, src, tgt, tgt)))
-            for splt in ['train', 'valid', 'test']
-            if splt != 'train' or (src, tgt) in required_para_train or (tgt, src) in required_para_train
-        } for src in params.langs for tgt in params.langs
-        if src < tgt and ((src, tgt) in required_para or (tgt, src) in required_para)
-    }
-    for paths in params.para_dataset.values():
-        for p1, p2 in paths.values():
-            if not os.path.isfile(p1):
-                logger.error(f"{p1} not found")
-            if not os.path.isfile(p2):
-                logger.error(f"{p2} not found")
-    assert all([all([os.path.isfile(p1) and os.path.isfile(p2) for p1, p2 in paths.values()])
-                for paths in params.para_dataset.values()])
+    para_dataset = dict()
+    for src in params.langs:
+        for tgt in params.langs:
+            if src < tgt and ((src, tgt) in required_para or (tgt, src) in required_para):
+                pair_dataset = dict()
+                for splt in ['train', 'valid', 'test']:
+                    if splt != 'train' or (src, tgt) in required_para_train or (tgt, src) in required_para_train:
+                        if params.input_format != 'plain':
+                            infix = params.input_format.rstrip('_linear')
+                            src_path = params.data_path / f'{splt}.{src}-{tgt}.{src}.{infix}.pth'
+                            check_exists(src_path)
+                        else:
+                            src_path = params.data_path / f'{splt}.{src}-{tgt}.{src}.pth'
+                        tgt_path = params.data_path / f'{splt}.{src}-{tgt}.{tgt}.pth'
+                        pair_dataset[splt] = (src_path, tgt_path)
+                para_dataset[(src, tgt)] = pair_dataset
+    params.para_dataset = para_dataset
 
     # check that we can evaluate on BLEU
     assert params.eval_bleu is False or len(params.mt_steps + params.bt_steps + params.eval_mt_steps) > 0

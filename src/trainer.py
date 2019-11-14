@@ -957,8 +957,13 @@ class EncDecTrainer(Trainer):
         use_graph_loss = (lang1 in self.supervised_graph) and (lang1 == lang2)
         if lang1 == lang2:
             input_format = 'eat' if ep else 'plain'
+            # HACK(j_luo) This is super hacky
             x1, len1, *indices = self.get_batch('ae', lang1, input_format=input_format, return_indices=use_graph_loss)
-            (x2, len2) = (x1, len1)
+            if params.input_format == 'plain':
+                (x2, len2) = (x1, len1)
+            else:
+                x2, len2 = len1
+                x1, len1 = x1
             if not ep or params.ep_add_noise:
                 x1, len1, permutations, keep = self.add_noise(x1, len1)
         else:

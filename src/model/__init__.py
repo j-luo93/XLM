@@ -176,6 +176,9 @@ def build_model(params, dico):
                 dv = torch.load(dvp)['dico']
                 nevp = params.mono_dataset[params.langs[0]]['valid']
                 ndvp = params.mono_dataset[params.langs[1]]['valid']
+                if params.input_format != 'plain':
+                    nevp = nevp[0]
+                    ndvp = ndvp[0]
                 nev = torch.load(nevp)['dico']
                 ndv = torch.load(ndvp)['dico']
 

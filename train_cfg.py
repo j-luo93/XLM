@@ -126,12 +126,14 @@ class DeEnMulti30KEatNoBt(DeEnMulti30KBaselineNoBt):
     DATA_ID = 'multi30k_EAT'
     FOLDER = 'processed-eat'
 
+    input_format: str = 'eat'
+
 
 @reg
 class DeEnIwsltEatNoBt(DeEnMulti30KEatNoBt):
     DATASET = 'iwslt'
     DATA_ID = 'iwslt_EAT'
-    eval_interval: int = 500
+    eval_interval: int = 1500
 
 
 @reg
@@ -139,6 +141,8 @@ class DeEnIwsltNeoLinearNoBt(DeEnIwsltEatNoBt):
     DATASET = 'iwslt'
     DATA_ID = 'iwslt_neo_linear'
     FOLDER = 'processed-neo-linear'
+
+    input_format: str = 'neo_linear'
 
 
 @reg

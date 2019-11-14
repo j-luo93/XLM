@@ -2,17 +2,19 @@
 Largely based on get-data-nmt.sh
 '''
 
-from trainlib import set_random_seeds
 import random
 from collections import namedtuple
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Optional
 
 from arglib import add_argument, g, parse_args
 from devlib import initiate
 from devlib.preprocess.action import set_action_constant
 from devlib.preprocess.format_file import FormatFile
 from devlib.preprocess.pipeline import Pipeline
+from trainlib import set_random_seeds
 
 MAIN_DIR = Path('/scratch/j_luo/eat-nmt/XLM/')
 TOOLS_DIR = Path('/scratch/j_luo/eat-nmt/XLM/tools/')
@@ -52,7 +54,12 @@ test_sets = {
     }
 }
 
-Key = namedtuple('Key', ['main', 'lang'])
+
+@dataclass(frozen=True)
+class Key:
+    main: str
+    lang: str
+
 
 if __name__ == "__main__":
     initiate(logger=True, gpus=True, commit_id=True, random_seed=True)
